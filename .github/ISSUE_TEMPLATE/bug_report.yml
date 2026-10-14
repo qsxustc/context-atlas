@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible problem in the browser app or CLI.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Context Atlas. Please use a small synthetic example when possible, and remove private code, credentials, and personal data from anything you post.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Load the demo or a small test folder
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include your OS and browser version, or Node version for a CLI issue.
+      placeholder: "macOS / Chrome (version), or Ubuntu / Node (version)"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: If known, provide the release version or commit you are using.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Example, screenshot, or error output
+      description: Optional evidence that helps reproduce the issue. Review it for sensitive data before posting.
+  - type: checkboxes
+    id: sensitive-data
+    attributes:
+      label: Public issue check
+      options:
+        - label: I have removed credentials, private source code, and personal data from this report.
+          required: true

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 — 2026-10-14
+
+- Add Focus Mode: choose a file and build context from its local dependencies, modules that import it, and related tests.
+- Explain candidate relationships, distinguish import-based and filename-based test suggestions, and show files omitted by the estimated token budget.
+- Analyze supported JavaScript/TypeScript imports locally with no parser package, backend, or external API. Report unresolved references and analysis limits.
+- Keep the focus file in the plan and make budget shortfalls visible instead of silently replacing it with smaller files.
+- Run browser analysis in a local worker; provide explicit rebuilding, selection restore, and a shareable link to the built-in Focus demo.
+- Add CLI `--focus <path>`, `--no-callers`, and `--no-tests` options using the same analysis and planning logic as the browser. Focus exports without a budget include related candidates only.
+
+Import analysis is best effort, test filename matches are suggestions, and relationships describe module imports rather than function calls. Review the resulting selection before sharing.
+
 ## 0.1.1 — 2026-10-14
 
 - Apply default and custom ignore rules before the browser's 5,000-readable-file limit. Binary, oversized, unreadable, and invalid UTF-8 files no longer use that allowance.

@@ -8,8 +8,11 @@ import {
   calculateSelection,
   estimateTokens,
   isIgnored,
+  normalizePath,
   suggestSelection,
 } from '../src/core.js';
+import { buildDependencyGraph } from '../src/dependencies.js';
+import { buildFocusPlan } from '../src/focus.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_REPOSITORY_BYTES = 50 * 1024 * 1024;
@@ -24,6 +27,11 @@ Usage:
 Options:
   --budget <tokens>     Select useful files within an estimated token budget.
                        Without this option, include every eligible text file.
+  --focus <path>        Build context around a repository-relative file path.
+                       Includes local dependencies, imported-by modules, and tests.
+                       Without --budget, include all related candidates.
+  --no-callers         With --focus, exclude modules that import the focus file.
+  --no-tests           With --focus, exclude related test candidates.
   --output <file>       Write the context to a file. Default: stdout.
                        Use --output - to explicitly write to stdout.
   --format <format>     markdown (default) or xml.
@@ -32,6 +40,7 @@ Options:
 
 Example:
   node bin/context-atlas.js ./my-app --budget 32000 --output context.md
+  node bin/context-atlas.js ./my-app --focus src/lib/storage.ts --budget 8000
 
 Files stay local. Symlinks, ignored paths, binary files, and files over
 1 MiB are skipped. The total eligible text limit is 50 MiB. Diagnostics
@@ -39,7 +48,7 @@ go to stderr, so stdout can be piped directly to another command.
 `;
 
 function parseArguments(args) {
-  const options = { directory: undefined, budget: undefined, output: undefined, format: 'markdown', redact: true };
+  const options = { directory: undefined, budget: undefined, output: undefined, focus: undefined, format: 'markdown', redact: true, includeCallers: true, includeTests: true };
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];
     if (argument === '--help' || argument === '-h') return { help: true };
@@ -47,10 +56,14 @@ function parseArguments(args) {
       options.redact = false;
       continue;
     }
+    if (argument === '--no-callers' || argument === '--no-tests') {
+      options[argument === '--no-callers' ? 'includeCallers' : 'includeTests'] = false;
+      continue;
+    }
     if (argument.startsWith('--')) {
       const separator = argument.indexOf('=');
       const name = separator === -1 ? argument : argument.slice(0, separator);
-      if (!['--budget', '--output', '--format'].includes(name)) throw new Error(`Unknown option: ${name}`);
+      if (!['--budget', '--output', '--format', '--focus'].includes(name)) throw new Error(`Unknown option: ${name}`);
       const value = separator === -1 ? args[++index] : argument.slice(separator + 1);
       if (value === undefined || value === '' || value.startsWith('--')) throw new Error(`${name} requires a value.`);
       options[name.slice(2)] = value;
@@ -60,6 +73,8 @@ function parseArguments(args) {
     options.directory = argument;
   }
   if (!options.directory) throw new Error('A directory is required. Run with --help for usage.');
+  if (!options.focus && (!options.includeCallers || !options.includeTests)) throw new Error('--no-callers and --no-tests require --focus.');
+  if (options.focus !== undefined) options.focus = normalizePath(options.focus);
   if (!['markdown', 'xml'].includes(options.format)) throw new Error('--format must be markdown or xml.');
   if (options.budget !== undefined) {
     if (!/^\d+$/.test(options.budget) || !Number.isSafeInteger(Number(options.budget)) || Number(options.budget) < 1) {
@@ -200,12 +215,28 @@ async function main() {
   }
   const { root, files, skipped } = await scanRepository(options.directory, options.output);
   if (files.length === 0) throw new Error('No eligible text files were found in this directory.');
-  const selected = options.budget === undefined ? files.map(file => file.id) : suggestSelection(files, options.budget);
+  let focusPlan, focusImportsSupported = true;
+  if (options.focus !== undefined) {
+    const focusFile = files.find(file => file.path === options.focus);
+    if (!focusFile) throw new Error('The focus path was not found among eligible files. Use a file path relative to the input directory.');
+    const graph = buildDependencyGraph(files);
+    focusImportsSupported = graph.supported.has(focusFile.id);
+    focusPlan = buildFocusPlan(files, graph, focusFile.id, options.budget ?? Infinity, {
+      includeCallers: options.includeCallers,
+      includeTests: options.includeTests,
+    });
+    if (focusPlan.overBudget) throw new Error('The focus file does not fit the requested token budget. Increase --budget.');
+  }
+  const selected = focusPlan ? [...focusPlan.selectedIds] : options.budget === undefined ? files.map(file => file.id) : suggestSelection(files, options.budget);
   const exportOptions = { format: options.format, redact: options.redact, projectName: path.basename(root) };
   let content = buildContext(files, selected, exportOptions);
   // Check the final format too: XML escaping and filenames consume context space.
   while (options.budget !== undefined && estimateTokens(content) > options.budget && selected.length > 0) {
-    selected.pop();
+    if (focusPlan) {
+      const removable = selected.findLastIndex(id => id !== options.focus);
+      if (removable < 0) throw new Error('The focus file does not fit the requested token budget. Increase --budget.');
+      selected.splice(removable, 1);
+    } else selected.pop();
     content = buildContext(files, selected, exportOptions);
   }
   if (selected.length === 0) throw new Error('No files fit the requested token budget. Increase --budget.');
@@ -214,6 +245,13 @@ async function main() {
   const skippedTotal = Object.values(skipped).reduce((total, count) => total + count, 0);
   const destination = options.output && options.output !== '-' ? ` to ${options.output}` : '';
   process.stderr.write(`Context Atlas: exported ${summary.count}/${files.length} files, ${estimateTokens(content)} estimated tokens${destination}. Skipped ${skippedTotal} paths.\n`);
+  if (focusPlan) {
+    const omittedCount = focusPlan.candidates.length - selected.length;
+    process.stderr.write(`Context Atlas: focus includes ${selected.length}/${focusPlan.candidates.length} related files.\n`);
+    if (!focusImportsSupported) process.stderr.write('Context Atlas: import analysis supports JavaScript and TypeScript; imports in this focus file were not analyzed.\n');
+    if (omittedCount) process.stderr.write(`Context Atlas: ${omittedCount} related files omitted to fit the budget; review the selection before sharing.\n`);
+    if (focusPlan.unresolved.length) process.stderr.write(`Context Atlas: ${focusPlan.unresolved.length} unresolved references or analysis limits; dependency context may be incomplete.\n`);
+  }
 }
 
 main().catch(error => {

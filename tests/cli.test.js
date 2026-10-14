@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { estimateTokens } from '../src/core.js';
+import { analyzeFile, calculateSelection, estimateTokens } from '../src/core.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(projectRoot, 'bin/context-atlas.js');
@@ -139,12 +139,105 @@ test('CLI help and argument failures have clean output', () => {
   assert.equal(help.status, 0);
   assert.match(help.stdout, /Usage:/);
   assert.equal(help.stderr, '');
-  for (const args of [[], ['.', '--budget', '0'], ['.', '--budget', 'wat'], ['.', '--format', 'json'], ['.', '--output']]) {
+  for (const args of [[], ['.', '--budget', '0'], ['.', '--budget', 'wat'], ['.', '--format', 'json'], ['.', '--output'], ['.', '--focus'], ['.', '--no-callers'], ['.', '--no-tests'], ['.', '--focus', '../outside.js']]) {
     const result = run(args);
     assert.notEqual(result.status, 0);
     assert.equal(result.stdout, '');
     assert.match(result.stderr, /Context Atlas:/);
   }
+});
+
+async function focusFixture(t) {
+  const { temporary, directory } = await fixture(t);
+  await mkdir(path.join(directory, 'tests'));
+  const rootContent = `import { helper } from './helper.js';\nexport const value = helper();\nexport const credential = "${fakeToken}";\n// FOCUS_ROOT_SENTINEL\n`;
+  await writeFile(path.join(directory, 'src/focus.js'), rootContent);
+  await writeFile(path.join(directory, 'src/helper.js'), "import { type } from './types.js';\nexport const helper = () => type;\n// FOCUS_DEPENDENCY_SENTINEL\n");
+  await writeFile(path.join(directory, 'src/types.js'), 'export const type = "FOCUS_TRANSITIVE_SENTINEL";\n');
+  await writeFile(path.join(directory, 'src/consumer.js'), "import { value } from './focus.js';\n// FOCUS_CONSUMER_SENTINEL\n");
+  await writeFile(path.join(directory, 'tests/focus.test.js'), "import { value } from '../src/focus.js';\n// FOCUS_TEST_SENTINEL\n");
+  await writeFile(path.join(directory, 'tests/unrelated.test.js'), '// UNRELATED_TEST_SENTINEL\n');
+  return { temporary, directory, rootContent };
+}
+
+test('CLI focus exports relevant imports, imported-by modules and tests without unrelated files', async t => {
+  const { directory } = await focusFixture(t);
+  const result = run([directory, '--focus', './src/focus.js']);
+  assert.equal(result.status, 0, result.stderr);
+  for (const sentinel of ['FOCUS_ROOT_SENTINEL', 'FOCUS_DEPENDENCY_SENTINEL', 'FOCUS_TRANSITIVE_SENTINEL', 'FOCUS_CONSUMER_SENTINEL', 'FOCUS_TEST_SENTINEL']) {
+    assert.ok(result.stdout.includes(sentinel), sentinel);
+  }
+  assert.ok(!result.stdout.includes('UNRELATED_TEST_SENTINEL'));
+  assert.ok(!result.stdout.includes('LARGE_NOTES_SENTINEL'));
+  assert.ok(!result.stdout.includes(fakeToken), 'focus exports retain default redaction');
+  assert.match(result.stderr, /focus includes/);
+  assert.doesNotMatch(result.stdout, /Context Atlas: focus/);
+});
+
+test('CLI focus can independently exclude imported-by modules and related tests', async t => {
+  const { directory } = await focusFixture(t);
+  const withoutCallers = run([directory, '--focus=src/focus.js', '--no-callers']);
+  assert.equal(withoutCallers.status, 0, withoutCallers.stderr);
+  assert.ok(!withoutCallers.stdout.includes('FOCUS_CONSUMER_SENTINEL'));
+  assert.ok(withoutCallers.stdout.includes('FOCUS_TEST_SENTINEL'));
+  const withoutTests = run([directory, '--focus', 'src/focus.js', '--no-tests']);
+  assert.equal(withoutTests.status, 0, withoutTests.stderr);
+  assert.ok(withoutTests.stdout.includes('FOCUS_CONSUMER_SENTINEL'));
+  assert.ok(!withoutTests.stdout.includes('FOCUS_TEST_SENTINEL'));
+  const dependenciesOnly = run([directory, '--focus', 'src/focus.js', '--no-callers', '--no-tests']);
+  assert.equal(dependenciesOnly.status, 0, dependenciesOnly.stderr);
+  assert.ok(dependenciesOnly.stdout.includes('FOCUS_DEPENDENCY_SENTINEL'));
+  assert.ok(!dependenciesOnly.stdout.includes('FOCUS_CONSUMER_SENTINEL'));
+  assert.ok(!dependenciesOnly.stdout.includes('FOCUS_TEST_SENTINEL'));
+});
+
+test('CLI focus respects finite export budgets and reports omitted candidates', async t => {
+  const { directory, rootContent } = await focusFixture(t);
+  const rootFile = analyzeFile({ path: 'src/focus.js', content: rootContent });
+  const budget = calculateSelection([rootFile], [rootFile.id]).tokens;
+  const result = run([directory, '--focus', 'src/focus.js', '--budget', String(budget), '--format', 'xml']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes('FOCUS_ROOT_SENTINEL'), 'root must never be dropped for smaller related files');
+  assert.ok(estimateTokens(result.stdout) <= budget);
+  assert.match(result.stderr, /related files omitted/);
+  assert.ok(!result.stdout.includes(fakeToken));
+});
+
+test('CLI focus fails cleanly for missing roots and budgets smaller than the root', async t => {
+  const { temporary, directory } = await focusFixture(t);
+  const output = path.join(temporary, 'existing-context.md');
+  await writeFile(output, 'PRESERVE_EXISTING_EXPORT');
+  for (const args of [
+    [directory, '--focus', 'src/missing.js'],
+    [directory, '--focus', '.env'],
+    [directory, '--focus', 'src/focus.js', '--budget', '1', '--output', output],
+  ]) {
+    const result = run(args);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /focus/i);
+  }
+  assert.equal(await readFile(output, 'utf8'), 'PRESERVE_EXISTING_EXPORT');
+});
+
+test('CLI focus reports unresolved references without putting source details in diagnostics', async t => {
+  const { directory } = await focusFixture(t);
+  const privateSpecifier = './missing-internal-credential-location.js';
+  await writeFile(path.join(directory, 'src/focus.js'), `import '${privateSpecifier}';\n// FOCUS_ROOT_SENTINEL\n`);
+  const result = run([directory, '--focus', 'src/focus.js']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /unresolved references/);
+  assert.ok(!result.stderr.includes(privateSpecifier));
+  assert.ok(!result.stderr.includes('FOCUS_ROOT_SENTINEL'));
+});
+
+test('CLI focus reports unsupported root languages while retaining the chosen file', async t => {
+  const { directory } = await focusFixture(t);
+  await writeFile(path.join(directory, 'src/focus.py'), 'from helper import value\n# PYTHON_FOCUS_SENTINEL\n');
+  const result = run([directory, '--focus', 'src/focus.py']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PYTHON_FOCUS_SENTINEL/);
+  assert.match(result.stderr, /imports in this focus file were not analyzed/);
 });
 
 async function freePort() {

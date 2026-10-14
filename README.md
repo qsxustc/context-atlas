@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>See your codebase. Choose the context. Stay within budget.</strong>
+  <strong>Pick a file. Find its context. Stay within budget.</strong>
 </p>
 
 <p align="center">
@@ -24,14 +24,15 @@
 
 You know which problem you want an AI assistant to solve. Deciding which files to give it is harder. A large repository hides the useful parts among generated output, unrelated modules, and files that quietly consume half your context window.
 
-**Context Atlas makes that choice visible.** Load a folder, explore its estimated context costs as a treemap, pick the files that matter, and export a prompt-ready context bundle. Watch the estimated token budget change as you work.
+**Context Atlas makes that choice visible.** Pick the file you're changing and use **Focus Mode** to gather its local dependencies, modules that import it, and related tests. See why each file belongs, review what the budget left out, and export a prompt-ready context bundle. Everything runs locally.
 
 <p align="center">
-  <img src="assets/demo.jpg" alt="Context Atlas showing a repository treemap, selected files, and a context budget" width="1100">
+  <img src="assets/focus-demo.jpg" alt="Focus Mode selecting a focal file, dependencies, imported-by modules and tests within a context budget" width="1100">
 </p>
 
 ### What you can do
 
+- **Build context around a file.** Focus Mode follows supported JS/TS imports, finds modules that import the focus file and related tests, and explains each candidate.
 - **Explore a repository visually.** A treemap turns estimated file token costs into something you can scan.
 - **Choose your context deliberately.** Search the file list, select individual files, and see how much each choice costs.
 - **Fit a budget.** Set a target and use automatic fitting to prepare a selection within the estimated budget.
@@ -41,6 +42,15 @@ You know which problem you want an AI assistant to solve. Deciding which files t
 - **Use English or 简体中文.** Switch the interface language in the app.
 
 The app runs entirely in your browser. It has no backend, tracking, external fonts, or API-key requirement. Repository contents are read locally and are not uploaded by Context Atlas. The development tools and CLI also have **zero package dependencies**.
+
+### Try Focus Mode in a minute
+
+1. [Try the Focus demo](https://qsxustc.github.io/context-atlas/?focus=src%2Flib%2Fstorage.ts), or inspect `src/lib/storage.ts` in the sample project and click **Focus on this file**.
+2. Atlas finds its `src/types.ts` dependency, `src/hooks/useNotes.ts` as a module that imports it, and `tests/storage.test.ts`.
+3. Review the reasons, adjust the imported-by and test options, and check any files omitted by the budget.
+4. Preview, copy, or download the context for your AI assistant.
+
+Focus follows module imports; it does not infer function calls or understand a task description. Import analysis supports JavaScript and TypeScript, including JSX/TSX and their module extensions. Related tests are suggested using direct imports or matching file names, with the reason shown. Rebuild explicitly after changing the budget or options, undo to return to the previous selection, or continue selecting files manually. Unresolved references and budget omissions need review. See the [analysis limits](docs/architecture.md#focus-mode) before relying on it for an unfamiliar project.
 
 ### Run locally
 
@@ -60,8 +70,8 @@ The source uses browser ES modules, so serve it over HTTP using the included dev
 
 1. Explore the built-in demo, select a local folder, or drag a folder into the app.
 2. Explore the treemap and search for the part of the repository relevant to your task.
-3. Select files and set your estimated token budget.
-4. Use automatic fitting when your selection exceeds the budget, then review the result.
+3. Inspect the file you're changing and build a focus selection, or select files manually.
+4. Set your estimated token budget, rebuild the focus selection if needed, and review omitted files. General automatic fitting is also available.
 5. Review the preview and redaction setting, then export Markdown or XML.
 
 A folder picker is the easiest way to load a repository in a current desktop browser. Folder drag-and-drop support depends on your browser; use the picker if dragging does not work.
@@ -80,7 +90,15 @@ node bin/context-atlas.js ./repo --budget 32000 --output context.md
 
 For XML output, add `--format xml`. Omit `--output` to write the bundle to standard output. The CLI redacts common secret patterns by default; `--no-redact` disables that behavior. Run `node bin/context-atlas.js --help` for all options.
 
-Without `--budget`, the CLI exports all eligible files. With a budget, it applies the same selection heuristic as the browser app.
+Build context around a specific file, relative to the input directory:
+
+```sh
+node bin/context-atlas.js ./repo --focus src/lib/storage.ts --budget 8000 --output storage-context.md
+```
+
+Add `--no-callers` to leave out modules that import the focus file, or `--no-tests` to leave out suggested tests. These flags require `--focus`. Without `--budget`, a focus export includes every related candidate. With a budget, it keeps the focus file and fits related files around it; if the focus file alone cannot fit, the command fails before writing output. Counts of omitted files and unresolved references are reported on standard error.
+
+Without `--focus`, the existing behavior is unchanged: no `--budget` exports all eligible files, while a budget applies the general file-path selection heuristic.
 
 The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. An existing `--output` file is excluded from its own export, including when its parent path uses a symlink alias. Diagnostics go to standard error so exported standard output can be piped into another command.
 
@@ -90,7 +108,7 @@ The CLI is useful when you want a context file directly from a terminal. The bro
 
 Token counts are **estimates**, not the output of a model-specific tokenizer. The budget includes the exported bundle's framing and file headers. Languages, source code, punctuation, and individual models can tokenize differently. Keep some room for your instructions, the conversation history, and the model's response.
 
-Automatic fitting uses a file-path heuristic that prioritizes README files, configuration, entry points, and source files. It does not analyze your task or build a dependency graph. Review the selected files against the actual task: a small but unrelated file is still unrelated, and an omitted dependency may matter.
+General automatic fitting uses a file-path heuristic that prioritizes README files, configuration, entry points, and source files. Focus Mode instead uses supported import relationships around a chosen file. Neither method understands your task, and a budget can exclude a useful dependency. Review the selection and any omission or unresolved-reference notices before exporting.
 
 Local redaction recognizes common credential patterns. It cannot guarantee detection of every secret or sensitive detail. Redaction is enabled again when you load another project or restore the demo. Review the exported text before sharing it with another service.
 

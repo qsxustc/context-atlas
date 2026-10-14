@@ -1,9 +1,11 @@
+import { createFocusUI } from './focus-ui.js';
 import { analyzeFile, estimateTokens, calculateSelection, suggestSelection, buildContext } from './core.js';
 import { demoProject } from './demo.js';
 import { layoutTreemap } from './treemap.js';
 import { zh, en } from './i18n.js';
 import { prepareImport, readIgnoreRules, collectDroppedEntries, folderRelativePath } from './import-utils.js';
 
+let focusUI;
 const $ = id => document.getElementById(id);
 const defaults = new Map([...document.querySelectorAll('[data-i18n]')].map(el=>[el,el.innerHTML]));
 const MAX_FILE = 1024 * 1024, MAX_TOTAL = 50 * MAX_FILE, MAX_FILES = 5000;
@@ -30,7 +32,7 @@ function applyLanguage() {
 }
 function loadDemo(showToast=false) {
  if(importing || collecting) return toast(t('busy'));
- resetExport();
+ resetExport();focusUI?.resetProject();
  projectName=demoProject.name; files=demoProject.files.map(analyzeFile); selected=new Set(files.filter(f=>!f.path.startsWith('tests/')&&!f.path.startsWith('docs/')&&!f.path.endsWith('sync.ts')).map(f=>f.id));
  activeId='src/components/Editor.tsx';query='';$('search').value='';isDemo=true;render();if(showToast)toast(t('demoLoaded'));
 }
@@ -49,7 +51,7 @@ function render() {
  $('project-tokens').textContent=t('totalTokens',{n:num(files.reduce((n,f)=>n+f.tokens,0))});
  $('map-filter').textContent=query?t('filter'):(locale==='zh'?zh.allFiles:'all files');
  renderImportStatus();
- renderTree();renderMap();renderInspector();renderStats();
+ renderTree();renderMap();renderInspector();renderStats();focusUI?.render();
 }
 function renderTree() {
  const fragment=document.createDocumentFragment(), visible=visibleFiles().sort((a,b)=>a.path.localeCompare(b.path)); let lastDir=null;
@@ -87,6 +89,7 @@ function renderMap() {
  const legend=document.createDocumentFragment();for(const language of [...new Set(visible.map(languageName))].slice(0,6)){const span=document.createElement('span'),dot=document.createElement('i');dot.style.background=colors[language].dot;span.append(dot,document.createTextNode(language));legend.append(span);}$('language-legend').replaceChildren(legend);
 }
 function renderInspector() {
+ focusUI?.refreshTrigger();
  const file=files.find(f=>f.id===activeId);$('toggle-active').disabled=!file;
  if(!file){$('active-path').textContent=t('noInspect');$('active-meta').textContent='';$('code-content').textContent='';$('risk-notice').hidden=true;return;}
  $('active-path').textContent=file.path;$('active-meta').textContent=`~${num(file.tokens)} tokens · ${bytes(file.bytes)}`;
@@ -103,14 +106,15 @@ function renderStats() {
  $('selected-tokens').textContent=num(stats.tokens);$('budget-fill').style.width=`${Math.min(100,percent)}%`;$('budget-fill').parentElement.classList.toggle('over',over);
  $('budget-percent').textContent=t('used',{n:percent});$('remaining').textContent=t(over?'over':'remaining',{n:num(Math.abs(limit-stats.tokens))});
  $('selected-count').textContent=num(stats.count);$('selected-bytes').textContent=bytes(stats.bytes);$('selected-risks').textContent=stats.risks?`${stats.risks} ↗`:'0';$('selected-risks').classList.toggle('has-risks',stats.risks>0);
- $('export-button').disabled=stats.count===0||importing||collecting;for(const el of document.querySelectorAll('[data-budget]'))el.classList.toggle('active',Number(el.dataset.budget)===limit);
+ focusUI?.refreshBudget();
+ $('export-button').disabled=stats.count===0||importing||collecting||focusUI?.isBusy();for(const el of document.querySelectorAll('[data-budget]'))el.classList.toggle('active',Number(el.dataset.budget)===limit);
 }
 function updateFileStates() {
  for(const row of $('file-tree').querySelectorAll('.file-row')){row.classList.toggle('active',row.dataset.fileId===activeId);row.querySelector('input').checked=selected.has(row.dataset.fileId);}
  for(const tile of $('treemap').querySelectorAll('.map-tile')){const included=selected.has(tile.dataset.fileId);tile.classList.toggle('excluded',!included);tile.classList.toggle('active',tile.dataset.fileId===activeId);const toggle=tile.querySelector('.tile-select');if(toggle)toggle.textContent=included?'✓':'+';}
 }
 function setActive(id) {activeId=id;updateFileStates();renderInspector();}
-function toggleFile(id,checked=!selected.has(id)) {if(checked)selected.add(id);else selected.delete(id);updateFileStates();renderInspector();renderStats();}
+function toggleFile(id,checked=!selected.has(id)) {focusUI?.manualChange();if(checked)selected.add(id);else selected.delete(id);updateFileStates();renderInspector();renderStats();}
 function refreshExport() {
  const redact=$('redact-checkbox').checked, output=buildContext(files,selected,{format,redact,projectName});$('export-preview').value=output;
  const stats=calculateSelection(files,selected);$('export-summary').textContent=t('summary',{n:stats.count,t:num(estimateTokens(output)),b:bytes(new TextEncoder().encode(output).length),r:t(redact?'redacted':'unredacted')});
@@ -118,7 +122,7 @@ function refreshExport() {
  $('export-warning').hidden=!warnings.length;$('export-warning').textContent=warnings.join(' ');
  for(const el of document.querySelectorAll('[data-format]'))el.classList.toggle('active',el.dataset.format===format);
 }
-function showExport() {if(importing||collecting)return toast(t('busy'));if(!selected.size)return toast(t('nothing'));refreshExport();$('export-dialog').showModal();}
+function showExport() {if(focusUI?.isBusy())return;if(importing||collecting)return toast(t('busy'));if(!selected.size)return toast(t('nothing'));refreshExport();$('export-dialog').showModal();}
 async function copyContext() {const output=$('export-preview').value;try {await navigator.clipboard.writeText(output);toast(t('copied'));}catch{$('export-preview').focus();$('export-preview').select();toast(locale==='zh'?'请按 Ctrl/Cmd+C 复制选中的上下文。':'Press Ctrl/Cmd+C to copy the selected context.');}}
 function downloadContext() {const blob=new Blob([$('export-preview').value],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`${projectName.replace(/[^\p{L}\p{N}._-]/gu,'-')}-context.${format==='xml'?'xml':'md'}`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast(t('downloaded'));}
 
@@ -141,7 +145,7 @@ async function importFiles(source, name, collection={}) {
    }catch{skipped++;}
   }
   if(!next.length){toast(t('importEmpty')+(truncated?' '+t('importLimited'):''));return;}
-  resetExport();projectName=name||'my-project';files=next;selected=new Set(suggestSelection(files,budget()));activeId=files.find(f=>selected.has(f.id))?.id||files[0].id;query='';$('search').value='';isDemo=false;importRecord={n:files.length,s:skipped,truncated};render();
+  resetExport();focusUI?.resetProject();projectName=name||'my-project';files=next;selected=new Set(suggestSelection(files,budget()));activeId=files.find(f=>selected.has(f.id))?.id||files[0].id;query='';$('search').value='';isDemo=false;importRecord={n:files.length,s:skipped,truncated};render();
   toast(t('importDone',{n:num(files.length),s:num(skipped)})+(truncated?' '+t('importLimited'):''));
  }catch{toast(t('importFail'));}
  finally{importing=false;$('import-button').disabled=false;$('import-button').querySelector('span').textContent=locale==='zh'?zh.open:'Open folder';$('folder-input').value='';renderImportStatus();renderStats();}
@@ -159,14 +163,23 @@ document.addEventListener('drop',async event=>{
 });
 $('demo-button').addEventListener('click',()=>loadDemo(true));$('language-button').addEventListener('click',()=>{locale=locale==='en'?'zh':'en';applyLanguage();});
 $('search').addEventListener('input',event=>{query=event.target.value;renderTree();renderMap();$('map-filter').textContent=query?t('filter'):(locale==='zh'?zh.allFiles:'all files');});
-$('select-all').addEventListener('click',()=>{for(const file of visibleFiles())selected.add(file.id);render();});$('clear-selection').addEventListener('click',()=>{for(const file of visibleFiles())selected.delete(file.id);render();});
+$('select-all').addEventListener('click',()=>{focusUI?.manualChange();for(const file of visibleFiles())selected.add(file.id);render();});$('clear-selection').addEventListener('click',()=>{focusUI?.manualChange();for(const file of visibleFiles())selected.delete(file.id);render();});
 $('toggle-active').addEventListener('click',()=>{if(activeId)toggleFile(activeId);});$('budget').addEventListener('input',renderStats);for(const eventName of ['change','blur'])$('budget').addEventListener(eventName,()=>{$('budget').value=budget();renderStats();});
 for(const el of document.querySelectorAll('[data-budget]'))el.addEventListener('click',()=>{$('budget').value=el.dataset.budget;renderStats();});
-$('fit-button').addEventListener('click',()=>{selected=new Set(suggestSelection(files,budget()));render();toast(selected.size?t('fitDone',{n:selected.size}):t('noBudget'));});
+$('fit-button').addEventListener('click',()=>{focusUI?.manualChange();selected=new Set(suggestSelection(files,budget()));render();toast(selected.size?t('fitDone',{n:selected.size}):t('noBudget'));});
 $('export-button').addEventListener('click',showExport);$('redact-checkbox').addEventListener('change',refreshExport);
 for(const el of document.querySelectorAll('[data-format]'))el.addEventListener('click',()=>{format=el.dataset.format;refreshExport();});
 $('copy-button').addEventListener('click',copyContext);$('download-button').addEventListener('click',downloadContext);$('help-button').addEventListener('click',()=>$('help-dialog').showModal());
 for(const el of document.querySelectorAll('.close-dialog'))el.addEventListener('click',()=>el.closest('dialog').close());
 for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('click',event=>{const rect=dialog.getBoundingClientRect();if(event.target===dialog&&(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom))dialog.close();});
 let resizeFrame;new ResizeObserver(()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(renderMap);}).observe($('treemap'));
+focusUI=createFocusUI({
+ getFiles:()=>files,getSelection:()=>selected,getActiveId:()=>activeId,getBudget:budget,getLocale:()=>locale,isImporting:()=>importing||collecting,
+ applySelection:(ids,id)=>{selected=new Set(ids);activeId=id;query='';$('search').value='';render();if($('export-dialog').open)refreshExport();},
+ onBusyChange:renderStats,
+ inspectFile:setActive,loadDemo,toast,
+});
 loadDemo();
+// Deep links only address the public, built-in demo; imported repository paths are never put in URLs.
+const demoFocus=new URLSearchParams(location.search).get('focus');
+if(demoFocus&&files.some(file=>file.id===demoFocus)){setActive(demoFocus);focusUI.run(demoFocus);}

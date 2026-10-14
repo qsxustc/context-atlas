@@ -14,9 +14,17 @@
   <a href="README.md">English</a> · <a href="LICENSE">MIT 开源</a> · 零依赖 · 文件内容留在本地
 </p>
 
+<p align="center">
+  <a href="https://qsxustc.github.io/context-atlas/">在线体验</a> · <a href="https://github.com/qsxustc/context-atlas">GitHub 仓库</a>
+</p>
+
 你已经知道要让 AI 解决什么问题，但一个代码库里可能有几百个文件：相关模块、生成文件、辅助工具，还有一个不知不觉占掉大量上下文的大文件。哪些应该放进去，哪些可以省略，往往需要反复判断。
 
 **Context Atlas 把这个判断过程变成可视化操作。** 加载本地文件夹，用矩形树图查看代码库，勾选任务相关文件，实时查看估算的 token 用量，最后导出可直接交给 AI 的上下文文本。
+
+<p align="center">
+  <img src="assets/demo.jpg" alt="Context Atlas 的代码库矩形树图、文件选择列表和上下文预算" width="1100">
+</p>
 
 ### 可以做什么
 
@@ -35,6 +43,8 @@
 需要 **Node.js 20 或更高版本**。克隆或下载仓库后运行：
 
 ```sh
+git clone https://github.com/qsxustc/context-atlas.git
+cd context-atlas
 npm run dev
 ```
 

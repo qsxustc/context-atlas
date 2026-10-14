@@ -14,6 +14,7 @@ try {
   await mkdir(destination, { recursive: true });
   await cp(path.join(projectRoot, 'index.html'), path.join(destination, 'index.html'));
   await cp(path.join(projectRoot, 'src'), path.join(destination, 'src'), { recursive: true });
+  await cp(path.join(projectRoot, 'assets', 'social-preview.png'), path.join(destination, 'social-preview.png'));
   // Public assets are served at the site root, including on GitHub Pages.
   for (const name of await readdir(path.join(projectRoot, 'public'))) {
     if (name === 'index.html' || name === 'src') {

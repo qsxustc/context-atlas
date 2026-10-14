@@ -14,12 +14,21 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-4f9d83" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/dependencies-zero-4f9d83" alt="Zero dependencies">
   <img src="https://img.shields.io/badge/data-stays%20local-4f9d83" alt="Data stays local">
+  <a href="https://github.com/qsxustc/context-atlas/actions/workflows/ci.yml"><img src="https://github.com/qsxustc/context-atlas/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://qsxustc.github.io/context-atlas/">Try the demo</a> · <a href="https://github.com/qsxustc/context-atlas">GitHub repository</a>
 </p>
 
 You know which problem you want an AI assistant to solve. Deciding which files to give it is harder. A large repository hides the useful parts among generated output, unrelated modules, and files that quietly consume half your context window.
 
 **Context Atlas makes that choice visible.** Load a folder, explore its estimated context costs as a treemap, pick the files that matter, and export a prompt-ready context bundle. Watch the estimated token budget change as you work.
+
+<p align="center">
+  <img src="assets/demo.jpg" alt="Context Atlas showing a repository treemap, selected files, and a context budget" width="1100">
+</p>
 
 ### What you can do
 
@@ -38,6 +47,8 @@ The app runs entirely in your browser. It has no backend, tracking, external fon
 With **Node.js 20 or later**, clone or download this repository, then run:
 
 ```sh
+git clone https://github.com/qsxustc/context-atlas.git
+cd context-atlas
 npm run dev
 ```
 

@@ -1,8 +1,8 @@
 # Launch notes
 
-This document contains a release checklist and draft posts. Publishing the repository or these posts requires a real repository URL and a final review. These are drafts, not messages sent to any community.
+This document contains a release checklist and draft posts for [Context Atlas](https://github.com/qsxustc/context-atlas). The configured demo address is [qsxustc.github.io/context-atlas](https://qsxustc.github.io/context-atlas/). Verify the deployed demo and review the released app before using any announcement. These are drafts, not messages sent to any community.
 
-The SVG banner is an illustration of the product. An actual interface screenshot is still pending: capture one after a published demo is available, then add it to both READMEs. Repository creation and public deployment should be verified before replacing the launch-copy URL placeholders.
+The SVG banner is an illustration of the product. Both READMEs include the actual desktop interface screenshot in `assets/demo.jpg`. Review any visual assets against the version being announced; no social-preview upload or community promotion is implied by their presence in the repository.
 
 ## Positioning
 
@@ -21,14 +21,14 @@ The SVG banner is an illustration of the product. An actual interface screenshot
 - Run `npm test` and `npm run build` from a clean checkout.
 - Check the demo, folder loading, file search, selection, automatic fitting, redaction, both export formats, and both interface languages.
 - Check the CLI example in the README against a small test repository.
-- Capture an actual screenshot after the published demo is available and add it to both READMEs. Check that any screenshots or recordings match the released interface.
+- Check that the screenshot in both READMEs and any recordings match the released interface.
 - Review the illustrative social-preview banner against the project's current positioning.
-- Check documentation links and remove placeholders from anything being published.
+- Check documentation links before publishing an announcement.
 - Confirm that exported examples and screenshots contain only synthetic or public code and no credentials.
 - Review the MIT license and contribution instructions.
 - Push the source to the intended public GitHub repository, with a clear description and relevant topics.
 - If enabling GitHub Pages, set **Repository Settings → Pages → Source → GitHub Actions**, then push to `main` or manually run the Pages workflow. Verify the deployed site and asset loading under the repository's URL path.
-- Record the real repository and demo URLs for the launch copy below.
+- Verify the repository and demo URLs in the launch copy below.
 - Use each community's current posting rules, disclose that you are the creator, and respond to technical feedback.
 
 Suggested GitHub description:
@@ -63,9 +63,9 @@ Body:
 >
 > The estimate is deliberately approximate, and secret redaction is best effort; the preview is there so you can review what you are about to share.
 >
-> Repository: [REPLACE_WITH_REPOSITORY_URL]
+> Repository: [qsxustc/context-atlas](https://github.com/qsxustc/context-atlas)
 >
-> Demo: [REPLACE_WITH_VERIFIED_DEMO_URL_OR_REMOVE_THIS_LINE]
+> Demo: [Try Context Atlas](https://qsxustc.github.io/context-atlas/)
 >
 > I would appreciate feedback on the file-selection workflow, especially which kinds of repositories make a visual budget useful.
 
@@ -85,7 +85,9 @@ Body:
 >
 > Token counts are approximate and the optional local secret redaction is best effort, so exports still need a review before sharing.
 >
-> I am the creator. The project is MIT licensed: [REPLACE_WITH_REPOSITORY_URL]
+> I am the creator. The project is MIT licensed: [qsxustc/context-atlas](https://github.com/qsxustc/context-atlas)
+>
+> Demo: [Try Context Atlas](https://qsxustc.github.io/context-atlas/)
 >
 > Which part of preparing repository context causes you the most friction: finding files, controlling size, or checking what gets included?
 
@@ -105,7 +107,9 @@ Choose a community that accepts this kind of project, review its current rules, 
 >
 > token 是粗略估算，脱敏是对常见密钥模式的尽力识别，分享前仍需要检查导出内容。
 >
-> MIT 开源：[替换为真实仓库地址]
+> MIT 开源：[qsxustc/context-atlas](https://github.com/qsxustc/context-atlas)
+>
+> 在线体验：[Context Atlas](https://qsxustc.github.io/context-atlas/)
 >
 > 欢迎试用，也想了解大家平时准备代码上下文时最费时间的一步。
 

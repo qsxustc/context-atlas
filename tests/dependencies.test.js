@@ -64,6 +64,51 @@ test('cycles and self imports are represented once without recursion', () => {
   assert.deepEqual([...graph.dependents.get('a.js')].sort(), ['a.js', 'b.js']);
 });
 
+test('division after object literals or increments does not swallow real dependency imports', () => {
+  for (const expression of [
+    '{} / 2', '{nested: {}} / 2', '{method() {}} / 2',
+    'counter++ / 2', 'counter-- / 2', '++counter / 2', '--counter / 2',
+    '{} / require("./dep") / 2', 'counter++ / require("./dep") / 2',
+    '{nested: {} / require("./dep") / 2}',
+    'ready ? 0 : {} / 2', 'ready ? {} / 2 : 0',
+    'ready ? {nested: {}} : {} / 2', 'ready ? (nested ? 0 : 1) : {} / 2',
+    '`value ${ {} / 2 }`', '`value ${ counter++ / 2 }`',
+    '`value ${ ready ? 0 : {} / 2 }`',
+  ]) {
+    const graph = buildDependencyGraph([
+      file('main.js', `let counter = 1; const value = ${expression}; import "./dep";`),
+      file('dep.js'),
+    ]);
+    assert.deepEqual(edges(graph, 'main.js'), ['dep.js'], expression);
+    assert.deepEqual(graph.unresolved.get('main.js'), [], expression);
+    if (expression.includes('require(')) {
+      const direct = buildDependencyGraph([file('main.js', `let counter = 1; const value = ${expression};`), file('dep.js')]);
+      assert.deepEqual(edges(direct, 'main.js'), ['dep.js'], `direct require: ${expression}`);
+    }
+  }
+});
+
+test('regex literals after statement blocks remain skipped while following imports are scanned', () => {
+  const graph = buildDependencyGraph([
+    file('main.js', String.raw`
+      if (ready) {} /require(".\/ghost")/.test(text);
+      function run() {} /import(".\/ghost")/.test(text);
+      { let count = 0; ++count; } /require(".\/ghost")/.test(text);
+      label: {} /require(".\/ghost")/.test(text);
+      switch (state) { case 1: {} /require(".\/ghost")/.test(text); }
+      function returns() { return
+        {} /require(".\/ghost")/.test(text); }
+      function* yields() { yield
+        {} /require(".\/ghost")/.test(text); }
+      function commentedReturn() { return /*
+        */ {} /require(".\/ghost")/.test(text); }
+      import './dep';
+    `),
+    file('dep.js'), file('ghost.js'),
+  ]);
+  assert.deepEqual(edges(graph, 'main.js'), ['dep.js']);
+});
+
 test('named imports and re-exports may themselves be named from or use string export names', () => {
   const graph = buildDependencyGraph([
     file('main.ts', `import {from as source, "string-name" as stringName} from './a'; export {from, "string-name"} from './b'; import from from './c';`),

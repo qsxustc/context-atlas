@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 — 2026-10-14
+
+- Preserve the previous successful `dist/` when a build fails to copy or validate resources. Prepare the complete build in a temporary directory before replacement, and restore the previous output if replacement fails.
+- Keep scanning real JS/TS imports after division expressions involving object literals, increment/decrement operators, conditional branches, and template interpolation. Continue skipping regular-expression contents after statement blocks, including labels, switch cases, and automatic semicolon insertion.
+- Accept supported Git diffs for unquoted paths containing a space followed by `b/`, such as `src/a b/file.js`. Resolve ambiguous headers against file labels or rename metadata while keeping candidate parsing bounded.
+- Retain complete dropped directories whose entry count exactly equals the enumeration limit. Probe the terminating batch without accepting extra entries; genuinely incomplete listings still preserve the existing ignore-rule safeguards.
+- Add eight regression tests for these fixes, bringing the automated suite to 162 tests. Verify Focus and Review demos, English/Chinese interface switching, and Markdown/XML export previews in the browser.
+
 ## 0.4.0 — 2026-10-14
 
 - Add Context Recipes: save a named file selection, estimated budget, export format, and content fingerprints, then reuse it against freshly imported current files.

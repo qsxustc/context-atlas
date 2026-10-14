@@ -2,6 +2,7 @@ import { isIgnored, normalizePath, redactSecrets } from './core.js';
 
 const MAX_BYTES = 1024 * 1024;
 const MAX_FILES = 500;
+const MAX_PATH_LENGTH = 4096;
 const EMPTY_BLOBS = ['e69de29bb2d1d6434b8b29ae775ad8c2e48c5391', '473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813'];
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -44,7 +45,7 @@ function safePath(value, prefix = '') {
   if (prefix && !decoded.startsWith(prefix)) invalid();
   const path = decoded.slice(prefix.length);
   try {
-    if (path.length > 4096 || normalizePath(path) !== path || /[\uD800-\uDFFF]/u.test(path)) invalid();
+    if (path.length > MAX_PATH_LENGTH || normalizePath(path) !== path || /[\uD800-\uDFFF]/u.test(path)) invalid();
   } catch { fail('UNSAFE_DIFF_PATH', 'The patch contains an unsafe or unsupported file path.'); }
   return path;
 }
@@ -59,19 +60,28 @@ function quotedEnd(text) {
 
 function headerPaths(line) {
   const rest = line.slice('diff --git '.length);
-  let parts;
+  let pairs;
   if (rest.startsWith('"')) {
     const end = quotedEnd(rest);
     if (rest[end] !== ' ') invalid();
-    parts = [rest.slice(0, end), rest.slice(end + 1)];
+    pairs = [[rest.slice(0, end), rest.slice(end + 1)]];
   } else {
     const boundaries = [];
     for (let i = 0; i < rest.length; i++) if (rest[i] === ' '
-      && (rest.startsWith('b/', i + 1) || rest.startsWith('"b/', i + 1))) boundaries.push(i);
-    if (boundaries.length !== 1) invalid();
-    parts = [rest.slice(0, boundaries[0]), rest.slice(boundaries[0] + 1)];
+      && i <= MAX_PATH_LENGTH + 2 && ((rest.startsWith('b/', i + 1) && rest.length - i - 1 <= MAX_PATH_LENGTH + 2)
+        || rest.startsWith('"b/', i + 1))) boundaries.push(i);
+    if (!boundaries.length) invalid();
+    pairs = boundaries.map(index => [rest.slice(0, index), rest.slice(index + 1)]);
   }
-  return [safePath(parts[0], 'a/'), safePath(parts[1], 'b/')];
+  // Git leaves spaces unquoted, so " b/" may also occur inside a filename.
+  // Keep every split until the file labels or rename metadata identify it.
+  const paths = [];
+  for (const [old, next] of pairs) {
+    try { paths.push([safePath(old, 'a/'), safePath(next, 'b/')]); }
+    catch (error) { if (pairs.length === 1) throw error; }
+  }
+  if (!paths.length) invalid();
+  return paths;
 }
 
 function excluded(path, patterns, blockedDirectories) {
@@ -120,7 +130,7 @@ function readHunk(lines, start, previous) {
 }
 
 function parseSection(lines, patterns, blockedDirectories) {
-  const [headerOld, headerNew] = headerPaths(lines[0]);
+  const headerCandidates = headerPaths(lines[0]);
   let added = false, deleted = false, renameFrom, renameTo, oldMode, newMode;
   let oldPath, newPath, sawPaths = false, binary = false, meaningful = false, indexSeen = false, indexOld, indexNew;
   const hunks = [];
@@ -165,6 +175,11 @@ function parseSection(lines, patterns, blockedDirectories) {
     seen.add(key);i++;
   }
   const renamed = renameFrom !== undefined || renameTo !== undefined;
+  const headers = headerCandidates.filter(([old, next]) =>
+    (renamed ? renameFrom === old && renameTo === next : old === next)
+    && (!sawPaths || (oldPath === (added ? null : old) && newPath === (deleted ? null : next))));
+  if (headers.length !== 1) invalid();
+  const [headerOld, headerNew] = headers[0];
   if (added && deleted || renamed && (added || deleted) || Boolean(oldMode) !== Boolean(newMode)
     || (renamed && (renameFrom !== headerOld || renameTo !== headerNew || renameFrom === renameTo))
     || (!renamed && headerOld !== headerNew)) invalid();

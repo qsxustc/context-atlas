@@ -76,8 +76,28 @@ function skipRegex(source, start) {
 
 function regexMayFollow(token) {
   if (!token || token.control) return true;
+  if (token.expression) return false;
   if (token.kind === 'word') return /^(return|throw|case|delete|void|typeof|instanceof|in|of|yield|await|else|do)$/.test(token.value);
   return token.kind === 'punctuation' && '=([{,:;!?&|+*%^~<>-}'.includes(token.value);
+}
+
+function objectMayFollow(token, inObject, lineBreak) {
+  return token?.kind === 'punctuation' && ('=([,?'.includes(token.value) || token.value === ':' && (inObject || token.conditional))
+    || token?.kind === 'word' && /^(return|throw|yield|await|default)$/.test(token.value)
+      && !(lineBreak && /^(return|yield)$/.test(token.value));
+}
+
+function markConditional(token, source, index, state) {
+  if ('([{'.includes(token.value)) state.level += 1;
+  else if (')]}'.includes(token.value)) {
+    state.level = Math.max(0, state.level - 1);
+    while (state.ternaries.at(-1) > state.level) state.ternaries.pop();
+  } else if (token.value === '?' && source[index - 1] !== '?' && !['?', '.'].includes(source[index + 1])) {
+    state.ternaries.push(state.level);
+  } else if (token.value === ':' && state.ternaries.at(-1) === state.level) {
+    state.ternaries.pop();
+    token.conditional = true;
+  }
 }
 
 // Skip templates together with their expressions, including nested templates.
@@ -93,38 +113,48 @@ function skipTemplate(source, start) {
       if (character === '\\') index += 2;
       else if (character === '`') { stack.pop(); index += 1; }
       else if (character === '$' && source[index + 1] === '{') {
-        stack.push({template: false, depth: 1, previous: null}); index += 2;
+        stack.push({template: false, depth: 1, previous: null, braces: [], level: 0, ternaries: []}); index += 2;
       } else index += 1;
       continue;
     }
     if (isSpace(character)) { index += 1; continue; }
     if (character === '"' || character === "'") {
       index = readString(source, index).end;
-      mode.previous = {kind: 'string'};
+      mode.previous = {kind: 'string', end: index};
     } else if (character === '`') {
       stack.push({template: true}); index += 1;
-      mode.previous = {kind: 'string'};
+      mode.previous = {kind: 'string', end: index};
     } else if (character === '/' && source[index + 1] === '/') {
       const end = source.indexOf('\n', index + 2); index = end < 0 ? source.length : end;
     } else if (character === '/' && source[index + 1] === '*') {
       const end = source.indexOf('*/', index + 2); index = end < 0 ? source.length : end + 2;
     } else if (character === '/' && regexMayFollow(mode.previous)) {
-      index = skipRegex(source, index); mode.previous = {kind: 'regex'};
+      index = skipRegex(source, index); mode.previous = {kind: 'regex', end: index};
     } else if (isWord(character)) {
       const begin = index++;
       while (isWord(source[index])) index += 1;
-      mode.previous = {kind: 'word', value: source.slice(begin, index)};
+      mode.previous = {kind: 'word', value: source.slice(begin, index), end: index};
     } else {
-      if (character === '{') mode.depth += 1;
+      if (character === '{') {
+        mode.depth += 1;
+        const lineBreak = /[\r\n\u2028\u2029]/.test(source.slice(mode.previous?.end ?? index, index));
+        mode.braces.push(!mode.previous || objectMayFollow(mode.previous, mode.braces.at(-1), lineBreak));
+      }
       if (character === '}' && --mode.depth === 0) stack.pop();
-      mode.previous = {kind: 'punctuation', value: character}; index += 1;
+      const doubled = (character === '+' || character === '-') && source[index + 1] === character;
+      mode.previous = {kind: 'punctuation', value: doubled ? character.repeat(2) : character};
+      markConditional(mode.previous, source, index, mode);
+      if (character === '}') mode.previous.expression = mode.braces.pop() ?? false;
+      index += doubled ? 2 : 1;
+      mode.previous.end = index;
     }
   }
   return index;
 }
 
 function tokenize(source) {
-  const tokens = [], parentheses = [];
+  const tokens = [], parentheses = [], braces = [];
+  const state = {level: 0, ternaries: []};
   let index = 0, previous = null;
   while (index < source.length && tokens.length < MAX_TOKENS) {
     const character = source[index];
@@ -149,10 +179,21 @@ function tokenize(source) {
       while (isWord(source[index])) index += 1;
       token = {kind: 'word', value: source.slice(begin, index)};
     } else {
-      token = {kind: 'punctuation', value: character}; index += 1;
+      // A completed object literal or increment cannot start a regex. Treating
+      // the following division as one can swallow a later real import string.
+      const doubled = (character === '+' || character === '-') && source[index + 1] === character;
+      token = {kind: 'punctuation', value: doubled ? character.repeat(2) : character};
+      markConditional(token, source, index, state);
+      index += doubled ? 2 : 1;
       if (character === '(') parentheses.push(previous?.kind === 'word' && /^(if|while|for|with|switch|catch)$/.test(previous.value));
       if (character === ')') token.control = parentheses.pop() ?? false;
+      if (character === '{') {
+        const lineBreak = /[\r\n\u2028\u2029]/.test(source.slice(previous?.end ?? index, index));
+        braces.push(objectMayFollow(previous, braces.at(-1), lineBreak));
+      }
+      if (character === '}') token.expression = braces.pop() ?? false;
     }
+    token.end = index;
     tokens.push(token); previous = token;
   }
   return {tokens, limited: index < source.length};

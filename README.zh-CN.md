@@ -185,7 +185,7 @@ npm run build
 npm run preview
 ```
 
-测试使用 Node 内置测试运行器。构建产物位于 `dist/`，可以部署到静态网站托管服务；preview 命令用于在本地预览构建产物。
+测试使用 Node 内置测试运行器。构建先在临时目录中完成，再替换 `dist/`，因此输入校验或资源复制失败时会保留上一次构建产物。可以将 `dist/` 部署到静态网站托管服务，或使用 preview 命令在本地预览。
 
 使用仓库自带的 GitHub Pages 工作流时，先在 **Repository Settings → Pages → Source** 中选择 **GitHub Actions**，再推送到 `main` 或手动运行部署工作流。
 

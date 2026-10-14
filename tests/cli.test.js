@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFile, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import os from 'node:os';
@@ -616,6 +616,50 @@ test('CLI recipe argument errors require explicit compatible file-based options'
     assert.equal(result.stdout, '');
     assert.match(result.stderr, /Context Atlas:/);
   }
+});
+
+async function buildFixture(t) {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'context-atlas-build-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  for (const directory of ['scripts', 'src', 'assets', 'public', 'dist']) {
+    await mkdir(path.join(temporary, directory));
+  }
+  const script = path.join(temporary, 'scripts/build.mjs');
+  await copyFile(path.join(projectRoot, 'scripts/build.mjs'), script);
+  await writeFile(path.join(temporary, 'index.html'), 'NEW_APP_SENTINEL');
+  await writeFile(path.join(temporary, 'src/app.js'), 'NEW_SOURCE_SENTINEL');
+  await writeFile(path.join(temporary, 'assets/social-preview.png'), 'NEW_IMAGE_SENTINEL');
+  await writeFile(path.join(temporary, 'public/favicon.svg'), 'NEW_FAVICON_SENTINEL');
+  await writeFile(path.join(temporary, 'dist/index.html'), 'PREVIOUS_SUCCESSFUL_BUILD');
+  await writeFile(path.join(temporary, 'dist/old.txt'), 'PREVIOUS_BUILD_ASSET');
+  return { temporary, script };
+}
+
+test('build preserves the previous successful output when copying or asset validation fails', async t => {
+  for (const failure of ['missing-image', 'public-collision']) {
+    const { temporary, script } = await buildFixture(t);
+    if (failure === 'missing-image') await rm(path.join(temporary, 'assets/social-preview.png'));
+    else await writeFile(path.join(temporary, 'public/index.html'), 'COLLIDING_PUBLIC_ASSET');
+    const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0, failure);
+    assert.match(result.stderr, /Build failed:/);
+    assert.equal(await readFile(path.join(temporary, 'dist/index.html'), 'utf8'), 'PREVIOUS_SUCCESSFUL_BUILD', failure);
+    assert.equal(await readFile(path.join(temporary, 'dist/old.txt'), 'utf8'), 'PREVIOUS_BUILD_ASSET', failure);
+    assert.deepEqual((await readdir(path.join(temporary, 'dist'))).sort(), ['index.html', 'old.txt']);
+    assert.ok(!(await readdir(temporary)).some(name => name.startsWith('.context-atlas-')));
+  }
+});
+
+test('build replaces stale output only after preparing all application and public assets', async t => {
+  const { temporary, script } = await buildFixture(t);
+  const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await readFile(path.join(temporary, 'dist/index.html'), 'utf8'), 'NEW_APP_SENTINEL');
+  assert.equal(await readFile(path.join(temporary, 'dist/src/app.js'), 'utf8'), 'NEW_SOURCE_SENTINEL');
+  assert.equal(await readFile(path.join(temporary, 'dist/social-preview.png'), 'utf8'), 'NEW_IMAGE_SENTINEL');
+  assert.equal(await readFile(path.join(temporary, 'dist/favicon.svg'), 'utf8'), 'NEW_FAVICON_SENTINEL');
+  assert.deepEqual((await readdir(path.join(temporary, 'dist'))).sort(), ['favicon.svg', 'index.html', 'social-preview.png', 'src']);
+  assert.ok(!(await readdir(temporary)).some(name => name.startsWith('.context-atlas-')));
 });
 
 async function freePort() {

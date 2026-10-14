@@ -83,7 +83,9 @@ export async function collectDroppedEntries(entries, {
   const children=[];
   try {
    const reader=entry.createReader();
-   while(enumerated<maxEntries) {
+   // At the exact limit, read the terminating batch too: an empty batch proves
+   // the listing is complete without enumerating any additional entries.
+   while(true) {
     const batch=await new Promise((resolve,reject)=>reader.readEntries(resolve,reject));
     if(!batch.length)return children;
     const available=maxEntries-enumerated;
@@ -91,7 +93,6 @@ export async function collectDroppedEntries(entries, {
     enumerated+=Math.min(batch.length,available);
     if(batch.length>available){truncated=true;break;}
    }
-   truncated=true;
   }catch{skipped++;truncated=true;}
   // Without a complete listing, a later .gitignore may still be missing. Only a
   // directory whose ignore file was found can safely contribute partial results.

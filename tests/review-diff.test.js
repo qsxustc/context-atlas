@@ -84,6 +84,24 @@ test('unsafe paths and invalid quoted byte encodings fail without disclosing sou
   assert.throws(()=>parseGitDiff(modified('../'+secret)),error=>!error.message.includes(secret));
 });
 
+test('unquoted paths containing a space followed by b/ resolve from labels and rename metadata',()=>{
+  const name='src/a b/file.js', renamed='src/new b/file.js';
+  assert.equal(parseGitDiff(modified(name)).changes[0].path,name);
+  assert.equal(parseGitDiff(added(name)).changes[0].path,name);
+  assert.equal(parseGitDiff(deleted(name)).changes[0].path,name);
+  assert.equal(parseGitDiff(moved(name,renamed)).changes[0].path,renamed);
+  const mode=`diff --git a/${name} b/${name}\nold mode 100644\nnew mode 100755\n`;
+  assert.equal(parseGitDiff(mode).changes[0].path,name);
+  rejects(modified(name).replace(`+++ b/${name}`,'+++ b/another.js'));
+});
+
+test('oversized ambiguous diff headers reject without expanding every possible split',()=>{
+  const hostile='a/'+' b/'.repeat(100000);
+  rejects(`diff --git ${hostile} b/main.js\nold mode 100644\nnew mode 100755\n`);
+  const long='nested/'+'x'.repeat(4000)+' b/file.js';
+  assert.equal(parseGitDiff(modified(long)).changes[0].path,long);
+});
+
 test('credential and generated paths are filtered before returned changes include their bodies',()=>{
   const patch=modified('src/ok.js')+added('.env')+modified('keys/id_rsa')+deleted('.aws/config')+modified('node_modules/x/a.js')+moved('.env.production','public.txt');
   const result=parseGitDiff(patch);
@@ -198,17 +216,21 @@ test('real Git output covers quoted Unicode, whitespace, additions, deletion and
     git('init','-q');git('config','user.email','test@example.com');git('config','user.name','Test');
     await mkdir(path.join(root,'src'));
     await writeFile(path.join(root,'src/项目 file.js'),'before\n');
+    await mkdir(path.join(root,'src/a b'),{recursive:true});
+    await writeFile(path.join(root,'src/a b/file.js'),'before\n');
     await writeFile(path.join(root,'old.md'),'rename me\n');
     await writeFile(path.join(root,'delete.txt'),'delete me\n');
     git('add','.');git('commit','-qm','base');
     await writeFile(path.join(root,'src/项目 file.js'),'after\n');
+    await writeFile(path.join(root,'src/a b/file.js'),'after\n');
     await rename(path.join(root,'old.md'),path.join(root,'new name.md'));
     await rm(path.join(root,'delete.txt'));
     await writeFile(path.join(root,'added.txt'),'added\n');git('add','.');
     const patch=git('diff','--no-ext-diff','--no-textconv','HEAD');
     const result=parseGitDiff(patch);
-    assert.equal(result.changes.length,4);
+    assert.equal(result.changes.length,5);
     assert.equal(result.changes.find(c=>c.path==='src/项目 file.js').hunks[0].newLines[0],'after');
+    assert.equal(result.changes.find(c=>c.path==='src/a b/file.js').hunks[0].newLines[0],'after');
     assert.equal(result.changes.find(c=>c.path==='new name.md').status,'renamed');
     assert.equal(result.changes.find(c=>c.path==='delete.txt').status,'deleted');
     assert.equal(result.changes.find(c=>c.path==='added.txt').status,'added');

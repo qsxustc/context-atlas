@@ -189,7 +189,7 @@ npm run build
 npm run preview
 ```
 
-Tests run with Node's built-in test runner. The build writes a static site to `dist/`, which can be deployed to a static host. Preview serves that build locally.
+Tests run with Node's built-in test runner. The build prepares a static site in a temporary directory before replacing `dist/`, so input validation or asset-copy failures leave the previous build intact. Deploy `dist/` to a static host, or use preview to serve it locally.
 
 For the included GitHub Pages workflow, set **Repository Settings → Pages → Source → GitHub Actions**, then push to `main` or run the deployment workflow manually.
 

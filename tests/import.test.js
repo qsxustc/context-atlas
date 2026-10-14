@@ -120,6 +120,33 @@ test('drop collection reports entry and eligible-file truncation explicitly',asy
  assert.equal(complete.result.length,5);assert.equal(complete.truncated,false);
 });
 
+test('a complete dropped listing at the exact entry limit is retained',async()=>{
+ for(const batchSize of [1,3,100]) {
+  const children=Array.from({length:3},(_,i)=>fileEntry(`file${i}.js`));
+  const root=directoryEntry('repo',children,batchSize);
+  const collected=await collectDroppedEntries([root],{maxEntries:3});
+  assert.deepEqual(collected.result.map(entry=>entry.path),['file0.js','file1.js','file2.js']);
+  assert.equal(collected.truncated,false);
+  assert.equal(collected.skipped,0);
+ }
+ const nested=directoryEntry('repo',[directoryEntry('src',[fileEntry('app.js')])]);
+ const collected=await collectDroppedEntries([nested],{maxEntries:2});
+ assert.deepEqual(collected.result.map(entry=>entry.path),['src/app.js']);
+ assert.equal(collected.truncated,false);
+});
+
+test('the terminal-batch check stops when additional entries exceed the limit',async()=>{
+ let reads=0;
+ const root={name:'repo',isDirectory:true,createReader(){return {
+  readEntries(resolve){reads++;resolve([fileEntry(`file${reads}.js`)]);},
+ };}};
+ const collected=await collectDroppedEntries([root],{maxEntries:3});
+ assert.equal(reads,4,'one extra batch proves truncation without further enumeration');
+ assert.deepEqual(collected.result,[],'an incomplete listing without known ignore rules remains excluded');
+ assert.equal(collected.skipped,3,'only entries within the enumeration allowance were collected');
+ assert.equal(collected.truncated,true);
+});
+
 test('dropped directories with oversized or unreadable ignore files never contribute files',async()=>{
  const oversized=directoryEntry('private',[fileEntry('secret.txt'),fileEntry('.gitignore','secret.txt')]);
  const unreadableIgnore={name:'.gitignore',isFile:true,file(resolve){resolve({size:1,text:async()=>{throw new Error('unreadable');}});}};

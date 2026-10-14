@@ -28,7 +28,7 @@ Context Atlas is a static browser app and a Node CLI. Both use the same dependen
 | `src/style.css` | Design tokens, layout, responsive styles, and interaction states. |
 | `bin/context-atlas.js` | CLI arguments, bounded local filesystem scanning, recipe loading/saving, output writing, and diagnostics. Uses shared modules for analysis, planning, recipes, and export. |
 | `scripts/serve.mjs` | Local HTTP server for source development and `dist/` preview. |
-| `scripts/build.mjs` | Copies the app and public assets into `dist/` for static hosting. |
+| `scripts/build.mjs` | Stages the app and public assets, then replaces `dist/` for static hosting with recovery of the previous build if replacement fails. |
 
 ## Data flow
 
@@ -54,7 +54,7 @@ Browser folder picker / drag-and-drop          Node filesystem scan
 
 The browser imports at most 5,000 readable UTF-8 text files, with limits of 1 MiB per file and 50 MiB of text in total. It collects applicable ignore rules, applies default and custom path exclusions, and validates each candidate's size, NUL bytes, and UTF-8 encoding before counting it as an imported file. Ignored, unreadable, binary, oversized, and invalid UTF-8 files do not consume the readable-file allowance. Nested `.gitignore` patterns are scoped to their folders, and ignore files inside an already excluded directory cannot restore files from that directory.
 
-Drag-and-drop enumeration has a separate limit of 100,000 entries, covering files and directories. The collector lists a directory's children before processing them so a `.gitignore` in a later reader batch still applies. If the listing is incomplete, partial results are accepted only when that directory's own `.gitignore` was found and successfully read; otherwise the directory is skipped because its rules may be missing. Browser imports accept at most 1 MiB of `.gitignore` text in aggregate. A directory whose ignore file is unreadable or exceeds the remaining allowance is also skipped. The UI reports that the import was limited; an import with no readable files preserves the current project.
+Drag-and-drop enumeration has a separate limit of 100,000 entries, covering files and directories. The collector lists a directory's children before processing them so a `.gitignore` in a later reader batch still applies. At exactly the entry limit, an empty final reader batch confirms that the listing is complete; a further nonempty batch marks it as limited without accepting additional entries. If the listing is incomplete, partial results are accepted only when that directory's own `.gitignore` was found and successfully read; otherwise the directory is skipped because its rules may be missing. Browser imports accept at most 1 MiB of `.gitignore` text in aggregate. A directory whose ignore file is unreadable or exceeds the remaining allowance is also skipped. The UI reports that the import was limited; an import with no readable files preserves the current project.
 
 The CLI applies the same 1 MiB per-file and 50 MiB total text limits without a file-count cap, skips symlinks, and reads `.gitignore` from the input root only. It resolves output, diff-input, recipe-input, and recipe-save parent directories before scanning, so context artifacts and recipe metadata are excluded even if those paths use a symlinked ancestor. Input and output files that are themselves symlinks are rejected. Unreadable, oversized, or non-regular root `.gitignore` files stop the command rather than silently discarding their rules.
 
@@ -90,7 +90,7 @@ The CLI exposes `--focus <repository-relative path>`, with optional `--no-caller
 
 Review Pack prepares context for a change review from a user-supplied Git unified diff and the current imported repository. It does not run Git, apply a patch, fetch a repository, reconstruct historical sources, or contact an AI service. The browser accepts pasted or uploaded patch text; the CLI uses `--diff <file>` or `--diff -` for standard input. `--diff` cannot be combined with `--focus`.
 
-`parseGitDiff(text, { patterns, blockedDirectories })` accepts at most 1 MiB of UTF-8 patch text and 500 file sections. It validates Git `diff --git` headers, safe repository-relative paths, hunk line counts and ordering, and supported modification/addition/deletion/rename metadata. Git-quoted UTF-8 paths are decoded. Combined merge diffs, unsafe paths, duplicate changed paths, and malformed/incomplete supported structures are rejected. Binary sections are skipped. A patch with no eligible text changes fails without replacing the existing selection or export.
+`parseGitDiff(text, { patterns, blockedDirectories })` accepts at most 1 MiB of UTF-8 patch text and 500 file sections. It validates Git `diff --git` headers, safe repository-relative paths, hunk line counts and ordering, and supported modification/addition/deletion/rename metadata. Git-quoted UTF-8 paths are decoded. When an unquoted path contains spaces that make the header ambiguous, file labels and rename metadata identify the matching old/new path pair; conflicting or unresolved ambiguity is rejected. Combined merge diffs, unsafe paths, duplicate changed paths, and malformed/incomplete supported structures are rejected. Binary sections are skipped. A patch with no eligible text changes fails without replacing the existing selection or export.
 
 Both old and new paths of a change pass default and applicable custom ignore rules. Blocked directories from the current import also exclude patch descendants. A rename from or into an excluded path is omitted in full. Path filtering applies to deleted files as well as files that still exist. Skipped metadata records paths and reasons but retains no patch content for those sections. Limits and ignore handling remain best effort as described above; parsing a diff does not make repository text trustworthy.
 
@@ -155,5 +155,7 @@ The development and preview server binds to `127.0.0.1`. It rejects traversal, h
 ## Verification and deployment
 
 `npm test` runs Node's built-in test runner. Tests cover core behavior, import filtering and traversal, dependency scanning/resolution, focus planning, Git patch parsing/filtering/redaction, review selection/export, recipe validation/resolution/serialization, treemap layout, and CLI/server behavior. `npm run build` produces `dist/`; `npm run preview` serves it locally.
+
+The build validates inputs and copies assets into a temporary directory before replacing `dist/`. A preparation failure leaves the previous output intact. If installing the completed build fails, the script restores the previous directory; if restoration also fails, the error identifies the backup location so the previous output can be recovered.
 
 The CI workflow tests and builds the project. The Pages workflow deploys the static build on pushes to `main` or manual dispatch. Before using it, set **Repository Settings → Pages → Source → GitHub Actions** in the published repository.

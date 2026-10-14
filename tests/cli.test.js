@@ -35,8 +35,8 @@ async function fixture(t) {
   return { temporary, directory };
 }
 
-function run(args, cwd = projectRoot) {
-  return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8', timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
+function run(args, cwd = projectRoot, input) {
+  return spawnSync(process.execPath, [cli, ...args], { cwd, input, encoding: 'utf8', timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
 }
 
 test('CLI exports UTF-8, applies root gitignore and limits, and redacts by default', async t => {
@@ -238,6 +238,180 @@ test('CLI focus reports unsupported root languages while retaining the chosen fi
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /PYTHON_FOCUS_SENTINEL/);
   assert.match(result.stderr, /imports in this focus file were not analyzed/);
+});
+
+async function reviewFixture(t) {
+  const result = await focusFixture(t);
+  const patch = `diff --git a/src/focus.js b/src/focus.js
+index 1111111..2222222 100644
+--- a/src/focus.js
++++ b/src/focus.js
+@@ -1,4 +1,4 @@
+ import { helper } from './helper.js';
+-export const value = oldHelper();
++export const value = helper();
+ export const credential = "${fakeToken}";
+ // FOCUS_ROOT_SENTINEL
+diff --git a/.env b/.env
+index 1111111..2222222 100644
+--- a/.env
++++ b/.env
+@@ -1 +1 @@
+-IGNORED_OLD_DIFF_SENTINEL
++IGNORED_NEW_DIFF_SENTINEL
+diff --git a/private-notes/private.txt b/private-notes/private.txt
+index 1111111..2222222 100644
+--- a/private-notes/private.txt
++++ b/private-notes/private.txt
+@@ -1 +1 @@
+-CUSTOM_IGNORE_OLD_DIFF_SENTINEL
++CUSTOM_IGNORE_NEW_DIFF_SENTINEL
+`;
+  const patchPath = path.join(result.temporary, 'changes.patch');
+  await writeFile(patchPath, patch);
+  return { ...result, patch, patchPath };
+}
+
+test('CLI review combines filtered diff, changed files and dependency context with default redaction', async t => {
+  const { directory, patchPath } = await reviewFixture(t);
+  const result = run([directory, '--diff', patchPath]);
+  assert.equal(result.status, 0, result.stderr);
+  for (const sentinel of ['oldHelper()', 'FOCUS_ROOT_SENTINEL', 'FOCUS_DEPENDENCY_SENTINEL', 'FOCUS_TRANSITIVE_SENTINEL', 'FOCUS_CONSUMER_SENTINEL', 'FOCUS_TEST_SENTINEL']) {
+    assert.ok(result.stdout.includes(sentinel), sentinel);
+  }
+  for (const sentinel of [fakeToken, 'IGNORED_OLD_DIFF_SENTINEL', 'IGNORED_NEW_DIFF_SENTINEL', 'CUSTOM_IGNORE_OLD_DIFF_SENTINEL', 'CUSTOM_IGNORE_NEW_DIFF_SENTINEL', 'UNRELATED_TEST_SENTINEL', 'LARGE_NOTES_SENTINEL']) {
+    assert.ok(!result.stdout.includes(sentinel), `${sentinel} must not reach the review pack`);
+    assert.ok(!result.stderr.includes(sentinel), `${sentinel} must not reach diagnostics`);
+  }
+  assert.match(result.stderr, /review pack for 1 changed paths/);
+  assert.match(result.stderr, /2 patch paths skipped/);
+  assert.doesNotMatch(result.stderr, /do not match the patch/);
+  assert.doesNotMatch(result.stdout, /Context Atlas: exported/);
+});
+
+test('CLI review accepts stdin and independently disables callers and tests', async t => {
+  const { directory, patch } = await reviewFixture(t);
+  const withoutCallers = run([directory, '--diff', '-', '--no-callers'], projectRoot, patch);
+  assert.equal(withoutCallers.status, 0, withoutCallers.stderr);
+  assert.ok(!withoutCallers.stdout.includes('FOCUS_CONSUMER_SENTINEL'));
+  assert.ok(withoutCallers.stdout.includes('FOCUS_TEST_SENTINEL'));
+  const withoutTests = run([directory, '--diff=-', '--no-tests'], projectRoot, patch);
+  assert.equal(withoutTests.status, 0, withoutTests.stderr);
+  assert.ok(withoutTests.stdout.includes('FOCUS_CONSUMER_SENTINEL'));
+  assert.ok(!withoutTests.stdout.includes('FOCUS_TEST_SENTINEL'));
+});
+
+test('CLI review never rescans its raw patch through a symlinked parent', async t => {
+  const { temporary, directory, patch } = await reviewFixture(t);
+  await symlink(directory, path.join(temporary, 'project-alias'), 'dir');
+  const patchPath = path.join(temporary, 'project-alias', 'raw.patch');
+  await writeFile(patchPath, patch);
+  const result = run([directory, '--diff', patchPath, '--no-redact']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(fakeToken), 'explicit no-redact still applies to eligible contents');
+  assert.ok(!result.stdout.includes('IGNORED_NEW_DIFF_SENTINEL'), 'excluded sections must not reappear through the input patch file');
+  assert.ok(!result.stdout.includes('CUSTOM_IGNORE_NEW_DIFF_SENTINEL'));
+  assert.doesNotMatch(result.stdout, /raw\.patch/);
+});
+
+test('CLI review supports deletion-only patches without any current files', async t => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'context-atlas-deleted-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const patch = 'diff --git a/removed.js b/removed.js\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/removed.js\n+++ /dev/null\n@@ -1 +0,0 @@\n-export const old = "REMOVED_CONTENT_SENTINEL";\n';
+  const result = run([temporary, '--diff', '-'], projectRoot, patch);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /REMOVED_CONTENT_SENTINEL/);
+  assert.match(result.stderr, /0\/0 current files/);
+  assert.doesNotMatch(result.stderr, /missing from the imported/);
+});
+
+test('CLI review warns on current-file mismatches and missing files without leaking source in diagnostics', async t => {
+  const { directory, patchPath } = await reviewFixture(t);
+  await writeFile(path.join(directory, 'src/focus.js'), '// STALE_CHECKOUT_SENTINEL\n');
+  const stale = run([directory, '--diff', patchPath]);
+  assert.equal(stale.status, 0, stale.stderr);
+  assert.match(stale.stderr, /1 changed files do not match the patch new side/);
+  assert.ok(!stale.stderr.includes('STALE_CHECKOUT_SENTINEL'));
+  assert.ok(!stale.stderr.includes(fakeToken));
+  await rm(path.join(directory, 'src/focus.js'));
+  const missing = run([directory, '--diff', patchPath]);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.match(missing.stderr, /1 changed files are missing/);
+  assert.match(missing.stdout, /oldHelper\(\)/);
+});
+
+test('CLI review honors final XML budgets and fails before replacing an export when mandatory context cannot fit', async t => {
+  const { temporary, directory, patchPath } = await reviewFixture(t);
+  // Make optional context large enough that it cannot fit the review budget.
+  await writeFile(path.join(directory, 'src/helper.js'), '// OPTIONAL_LARGE_HELPER\n' + 'const longValue = "<&>";\n'.repeat(2000));
+  const budget = 2400;
+  const fitted = run([directory, '--diff', patchPath, '--format', 'xml', '--budget', String(budget)]);
+  assert.equal(fitted.status, 0, fitted.stderr);
+  assert.match(fitted.stdout, /FOCUS_ROOT_SENTINEL/);
+  assert.ok(estimateTokens(fitted.stdout) <= budget);
+  assert.doesNotMatch(fitted.stdout, /OPTIONAL_LARGE_HELPER/);
+  assert.match(fitted.stderr, /related files omitted/);
+  const output = path.join(temporary, 'existing-review.md');
+  await writeFile(output, 'PRESERVE_EXISTING_REVIEW');
+  const tooSmall = run([directory, '--diff', patchPath, '--budget', '1', '--output', output]);
+  assert.notEqual(tooSmall.status, 0);
+  assert.equal(tooSmall.stdout, '');
+  assert.match(tooSmall.stderr, /patch and current changed files/);
+  assert.equal(await readFile(output, 'utf8'), 'PRESERVE_EXISTING_REVIEW');
+});
+
+test('CLI review rejects invalid, oversized and symlink patch inputs before writing output', async t => {
+  const { temporary, directory, patchPath } = await reviewFixture(t);
+  const output = path.join(temporary, 'existing.md');
+  await writeFile(output, 'PRESERVE_EXISTING_REVIEW');
+  const badUtf8 = path.join(temporary, 'invalid.patch');
+  await writeFile(badUtf8, Buffer.from([0xff, 0xfe, 0xfd]));
+  const oversized = path.join(temporary, 'oversized.patch');
+  await writeFile(oversized, 'x'.repeat(1024 * 1024 + 1));
+  const linked = path.join(temporary, 'linked.patch');
+  await symlink(patchPath, linked);
+  for (const input of [badUtf8, oversized, linked, directory]) {
+    const result = run([directory, '--diff', input, '--output', output]);
+    assert.notEqual(result.status, 0, input);
+    assert.equal(result.stdout, '');
+  }
+  for (const input of ['', 'not a diff', 'x'.repeat(1024 * 1024 + 1), Buffer.from([0xff])]) {
+    const result = run([directory, '--diff', '-', '--output', output], projectRoot, input);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+  }
+  assert.equal(await readFile(output, 'utf8'), 'PRESERVE_EXISTING_REVIEW');
+});
+
+test('CLI review blocks patches under symlinks and fails closed when root ignore rules cannot be read safely', async t => {
+  const { temporary, directory } = await reviewFixture(t);
+  await symlink(temporary, path.join(directory, 'linked-directory'), 'dir');
+  const patch = 'diff --git a/linked-directory/secret.js b/linked-directory/secret.js\n--- a/linked-directory/secret.js\n+++ b/linked-directory/secret.js\n@@ -1 +1 @@\n-BLOCKED_OLD_SENTINEL\n+BLOCKED_NEW_SENTINEL\n';
+  const blocked = run([directory, '--diff', '-'], projectRoot, patch);
+  assert.notEqual(blocked.status, 0);
+  assert.equal(blocked.stdout, '');
+  assert.ok(!blocked.stderr.includes('BLOCKED_NEW_SENTINEL'));
+  await writeFile(path.join(directory, '.gitignore'), 'x'.repeat(1024 * 1024 + 1));
+  const unknownRules = run([directory, '--diff', '-'], projectRoot, patch);
+  assert.notEqual(unknownRules.status, 0);
+  assert.equal(unknownRules.stdout, '');
+  assert.match(unknownRules.stderr, /\.gitignore/);
+});
+
+test('CLI review argument errors are clean and terminal control characters cannot enter diagnostics', async t => {
+  const { directory, patchPath } = await reviewFixture(t);
+  for (const args of [
+    [directory, '--focus', 'src/focus.js', '--diff', patchPath],
+    [directory, '--diff'],
+    [directory, '--unknown\u001b[31m\nINJECTED'],
+    [directory, '--diff', path.join(directory, 'missing\u001b[31m\n.patch')],
+  ]) {
+    const result = run(args);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr.split('\n').length, 2, 'diagnostics must remain a single terminal line');
+    assert.doesNotMatch(result.stderr, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u);
+  }
 });
 
 async function freePort() {

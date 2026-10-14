@@ -48,7 +48,7 @@ const messages = {
   },
 };
 
-export function createFocusUI({getFiles,getSelection,getActiveId,getBudget,getLocale,isImporting,applySelection,inspectFile,loadDemo,toast,onBusyChange=()=>{}}) {
+export function createFocusUI({getFiles,getSelection,getActiveId,getBudget,getLocale,isImporting,applySelection,inspectFile,loadDemo,toast,onBusyChange=()=>{},onStart=()=>{}}) {
   let worker=null, workerLoaded=false, pending=null, timeout;
   let revision=0, requestId=0, busy=false, result=null;
   const t = (key,values={}) => {
@@ -86,6 +86,7 @@ export function createFocusUI({getFiles,getSelection,getActiveId,getBudget,getLo
   }
   async function run(rootId=getActiveId()) {
     if(busy||isImporting()||!rootId)return;
+    onStart();
     const currentRevision=revision, oldResult=result;
     const previous=oldResult?.previous||{ids:[...getSelection()],activeId:getActiveId()};
     const requestedBudget=getBudget(),settings=options();

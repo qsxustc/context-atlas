@@ -13,6 +13,11 @@ Context Atlas is a static browser app and a Node CLI. Both use the same dependen
 | `src/focus.js` | Shared focus planning: collect dependencies, direct imported-by modules, and related tests, then fit candidates around a retained root within the estimated budget. |
 | `src/focus-ui.js` | Focus controls, English/Chinese reason labels, candidate/omission display, explicit rebuilding, undo, and worker request lifecycle. |
 | `src/focus-worker.js` | Browser worker that caches the imported project graph and prepares focus plans away from the main UI thread. |
+| `src/review-diff.js` | Bounded Git unified-diff parsing, path filtering, hunk validation, and diff-aware credential redaction. |
+| `src/review.js` | Multi-file change planning, current-snapshot checks, review notes, token accounting, and Markdown/XML review export. |
+| `src/review-ui.js` | Local patch paste/file input, change summary, explicit rebuild, selection reasons, warnings, and undo. |
+| `src/review-worker.js` | Local diff parsing and review planning using a cached project dependency graph. |
+| `src/review-demo.js` | A synthetic patch for the sample repository, opened directly through `?review=demo`. |
 | `src/import-utils.js` | Browser import preparation, default/custom path filtering, bounded directory enumeration and ignore-file reads, folder-relative paths, and scoping nested `.gitignore` patterns. |
 | `src/treemap.js` | Deterministic balanced slice-and-dice rectangle layout. The UI uses estimated file tokens as weights, with a minimum weight for tiny files. |
 | `src/demo.js` | Synthetic Orbit Notes repository content, including a deliberately fake credential for trying redaction. Its code is displayed as text, never executed. |
@@ -33,9 +38,9 @@ Browser folder picker / drag-and-drop          Node filesystem scan
                                   ▼
                      analyzeFile → file records
                                   ▼
-          manual selection / general fitting / focus planning
+          manual selection / general fitting / focus or review planning
                                   ▼
-                 buildContext(format, redaction setting)
+                 buildContext / buildReviewContext(format, redaction setting)
                          ┌────────┴────────┐
                          ▼                 ▼
                   browser preview    CLI file / stdout
@@ -46,7 +51,7 @@ The browser imports at most 5,000 readable UTF-8 text files, with limits of 1 Mi
 
 Drag-and-drop enumeration has a separate limit of 100,000 entries, covering files and directories. The collector lists a directory's children before processing them so a `.gitignore` in a later reader batch still applies. If the listing is incomplete, partial results are accepted only when that directory's own `.gitignore` was found and successfully read; otherwise the directory is skipped because its rules may be missing. Browser imports accept at most 1 MiB of `.gitignore` text in aggregate. A directory whose ignore file is unreadable or exceeds the remaining allowance is also skipped. The UI reports that the import was limited; an import with no readable files preserves the current project.
 
-The CLI applies the same 1 MiB per-file and 50 MiB total text limits without a file-count cap, skips symlinks, and reads `.gitignore` from the input root only. It resolves the output parent directory before scanning, so a previous export is excluded even if the output path uses a symlinked ancestor. Output files that are themselves symlinks are rejected.
+The CLI applies the same 1 MiB per-file and 50 MiB total text limits without a file-count cap, skips symlinks, and reads `.gitignore` from the input root only. It resolves the output and diff-input parent directories before scanning, so previous exports and raw patch inputs are excluded even if those paths use a symlinked ancestor. Output and diff-input files that are themselves symlinks are rejected. Unreadable, oversized, or non-regular root `.gitignore` files stop the command rather than silently discarding their rules.
 
 Ignore handling supports common glob patterns on a best-effort basis rather than all Git ignore semantics; built-in exclusions remain in force. Matching distinguishes files from directories: `cache/` excludes a directory and its descendants but leaves a regular file named `cache` eligible, while a directory named `icons.png` can contain readable source files. Matching uses non-backtracking dynamic programming, skips rules longer than 2,048 characters, and evaluates at most 4,096 effective custom rules.
 
@@ -74,7 +79,29 @@ The planner uses the same conservative export estimate as general selection. The
 
 Browser analysis runs locally in a worker so imports can be scanned without blocking the interface. The worker caches the graph for the current project, and a failed or timed-out request clears that cache while preserving the previous selection. Changing options or budget requires an explicit rebuild. Undo restores the selection from before the current focus session; manual selection changes dismiss the old focus report. The built-in demonstration can be opened with `?focus=src%2Flib%2Fstorage.ts`; this selects a file in the synthetic sample and does not fetch repository content.
 
-The CLI exposes `--focus <repository-relative path>`, with optional `--no-callers` and `--no-tests` switches. Without `--budget`, it includes all focus candidates. Counts of budget omissions and unresolved references go to standard error, keeping exported standard output usable in pipelines. The general CLI export behavior remains unchanged when `--focus` is absent.
+The CLI exposes `--focus <repository-relative path>`, with optional `--no-callers` and `--no-tests` switches. Without `--budget`, it includes all focus candidates. Counts of budget omissions and unresolved references go to standard error, keeping exported standard output usable in pipelines. The general CLI export behavior remains unchanged when neither `--focus` nor `--diff` is present.
+
+## Review Pack
+
+Review Pack prepares context for a change review from a user-supplied Git unified diff and the current imported repository. It does not run Git, apply a patch, fetch a repository, reconstruct historical sources, or contact an AI service. The browser accepts pasted or uploaded patch text; the CLI uses `--diff <file>` or `--diff -` for standard input. `--diff` cannot be combined with `--focus`.
+
+`parseGitDiff(text, { patterns, blockedDirectories })` accepts at most 1 MiB of UTF-8 patch text and 500 file sections. It validates Git `diff --git` headers, safe repository-relative paths, hunk line counts and ordering, and supported modification/addition/deletion/rename metadata. Git-quoted UTF-8 paths are decoded. Combined merge diffs, unsafe paths, duplicate changed paths, and malformed/incomplete supported structures are rejected. Binary sections are skipped. A patch with no eligible text changes fails without replacing the existing selection or export.
+
+Both old and new paths of a change pass default and applicable custom ignore rules. Blocked directories from the current import also exclude patch descendants. A rename from or into an excluded path is omitted in full. Path filtering applies to deleted files as well as files that still exist. Skipped metadata records paths and reasons but retains no patch content for those sections. Limits and ignore handling remain best effort as described above; parsing a diff does not make repository text trustworthy.
+
+`buildReviewPlan(files, graph, parsed, budget, options)` uses available non-deleted changed files as roots. Every such changed file and the filtered patch are mandatory in the initial plan. The planner merges transitive local dependencies, optional direct modules that import changed files, and optional related tests, deduplicating shared context. It uses the same JS/TS relationship limitations as Focus Mode. Imports of deleted or missing modules cannot be recovered from old sources, so they do not create new dependency roots.
+
+The planner compares each available changed file against the supplied new-side hunk lines. It warns when those lines differ, when a changed file is unavailable, or when a supposedly deleted path is still imported. This is a partial snapshot check: unchanged lines outside hunks, pure renames, file-mode changes, and branch identity cannot be verified. The patch and current source are both retained with warnings rather than pretending they represent a reconstructed Git checkout. A deletion-only patch can be exported without any current source files.
+
+`buildReviewContext(files, selectedIds, plan, exportOptions)` generates review instructions, coverage and warning notes, and the accepted patch, then passes them through the shared Markdown/XML exporter alongside selected source files. Generated sections use a reserved path prefix that avoids collisions with actual repository paths. Notes identify the actual selected and omitted sources at export time. The diff and all repository-derived metadata are explicitly marked as untrusted context. No review or bug finding is generated by Context Atlas itself.
+
+`calculateReviewSelection(files, selectedIds, plan)` reports current-file count separately from generated sections while including the patch, notes, and source framing in token and byte costs. Planning reserves the full notes and patch cost before fitting optional files. Costs consider original and redacted diff variants, Markdown fencing, and XML escaping. The browser shows a mandatory-content budget shortfall; the CLI fails before writing output when mandatory content cannot fit and additionally checks the final exported format. Counts remain estimates, not model-specific tokenization.
+
+Diff redaction handles old and new hunk sides separately so `+` and `-` prefixes do not hide ordinary credential patterns. Private-key blocks are masked while preserving line prefixes and hunk counts. The shared exporter applies default redaction to both generated and current file content. `--no-redact` explicitly disables this export behavior. Pattern matching does not guarantee complete secret removal; users still need to inspect the result.
+
+The browser performs parsing and graph planning in a local worker with project-specific cache reset and bounded request lifetime. Budget or option changes require explicit rebuilding; undo restores the selection from before review. The demo link `?review=demo` uses only synthetic local content. The CLI bounds patch reads to 1 MiB before parsing, requires valid UTF-8, refuses input-file symlinks, and excludes the canonical patch file from the repository scan so raw ignored sections cannot reappear as a selected source. Standard-error warnings contain counts; control characters are removed from error messages and destination labels.
+
+A typical workflow is `git diff --no-ext-diff --no-textconv HEAD > /tmp/change.patch`, then `node bin/context-atlas.js ./repo --diff /tmp/change.patch --budget 16000 --output review.md`. Generate the patch in the repository being reviewed and import its matching working tree. That Git command compares tracked working-tree changes against `HEAD` and does not include untracked files. For pipelines, use `git diff --no-ext-diff --no-textconv HEAD | node /path/to/context-atlas/bin/context-atlas.js . --diff -`.
 
 ## Browser interaction and local serving
 
@@ -86,6 +113,6 @@ The development and preview server binds to `127.0.0.1`. It rejects traversal, h
 
 ## Verification and deployment
 
-`npm test` runs Node's built-in test runner. Tests cover core behavior, import filtering and traversal, dependency scanning/resolution, focus planning, treemap layout, and CLI/server behavior. `npm run build` produces `dist/`; `npm run preview` serves it locally.
+`npm test` runs Node's built-in test runner. Tests cover core behavior, import filtering and traversal, dependency scanning/resolution, focus planning, Git patch parsing/filtering/redaction, review selection/export, treemap layout, and CLI/server behavior. `npm run build` produces `dist/`; `npm run preview` serves it locally.
 
 The CI workflow tests and builds the project. The Pages workflow deploys the static build on pushes to `main` or manual dispatch. Before using it, set **Repository Settings → Pages → Source → GitHub Actions** in the published repository.

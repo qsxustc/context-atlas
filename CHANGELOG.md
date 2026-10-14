@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-10-14
+
+- Add Review Pack: import a Git unified diff and combine the filtered patch, current changed files, and related JS/TS dependencies, imported-by modules, and tests in one review context bundle.
+- Show change status, additions/deletions, selection reasons, omitted context, missing current files, and patch/current-snapshot mismatches. Include review instructions and source-coverage notes in Markdown/XML exports.
+- Reserve budget for the patch, review notes, and available changed files before fitting optional related sources. Allow deletion-only reviews without current files; fail CLI exports before writing when mandatory content cannot fit.
+- Parse supported Git text patches locally with path validation, ignore filtering, a 1 MiB input limit, and a 500-file limit. Redact credential patterns on both sides of diff hunks while preserving hunk structure.
+- Add CLI `--diff <file|->` for file or standard-input patches, with `--no-callers` and `--no-tests` options shared with Focus Mode. Exclude raw patch inputs from repository scans, including paths through symlinked parents.
+- Add a browser review workflow and built-in demo at `?review=demo`, with local worker processing, explicit rebuild, and selection restore.
+- Fail closed when the CLI root `.gitignore` cannot be read safely, and strip terminal control characters from CLI diagnostics.
+
+Review Pack prepares context; it does not apply patches, check out revisions, or perform an AI review. Snapshot checks cover supplied new-side hunk lines and deletion absence only. Import analysis and secret redaction remain best effort.
+
 ## 0.2.0 — 2026-10-14
 
 - Add Focus Mode: choose a file and build context from its local dependencies, modules that import it, and related tests.

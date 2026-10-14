@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Pick a file. Find its context. Stay within budget.</strong>
+  <strong>Turn a Git diff into review-ready context.</strong>
 </p>
 
 <p align="center">
@@ -24,14 +24,15 @@
 
 You know which problem you want an AI assistant to solve. Deciding which files to give it is harder. A large repository hides the useful parts among generated output, unrelated modules, and files that quietly consume half your context window.
 
-**Context Atlas makes that choice visible.** Pick the file you're changing and use **Focus Mode** to gather its local dependencies, modules that import it, and related tests. See why each file belongs, review what the budget left out, and export a prompt-ready context bundle. Everything runs locally.
+**Context Atlas makes that choice visible.** Import a Git diff to build a **Review Pack**: the patch, current changed files, and related dependencies, imported-by modules, and tests in one budgeted bundle. Or pick a single file with **Focus Mode**. See why each file belongs, inspect what is missing, and export context for the AI assistant you already use. Everything runs locally.
 
 <p align="center">
-  <img src="assets/focus-demo.jpg" alt="Focus Mode selecting a focal file, dependencies, imported-by modules and tests within a context budget" width="1100">
+  <img src="assets/review-demo.jpg" alt="Review Pack collecting two changed files, dependencies, importing modules and tests within a context budget" width="1100">
 </p>
 
 ### What you can do
 
+- **Prepare an AI code review.** Import a Git diff, retain the changes and current changed files, and fit related context around them. Check missing files and patch/current-file mismatches before exporting.
 - **Build context around a file.** Focus Mode follows supported JS/TS imports, finds modules that import the focus file and related tests, and explains each candidate.
 - **Explore a repository visually.** A treemap turns estimated file token costs into something you can scan.
 - **Choose your context deliberately.** Search the file list, select individual files, and see how much each choice costs.
@@ -42,6 +43,21 @@ You know which problem you want an AI assistant to solve. Deciding which files t
 - **Use English or 简体中文.** Switch the interface language in the app.
 
 The app runs entirely in your browser. It has no backend, tracking, external fonts, or API-key requirement. Repository contents are read locally and are not uploaded by Context Atlas. The development tools and CLI also have **zero package dependencies**.
+
+### Turn your changes into a Review Pack
+
+1. [Try the Review Pack demo](https://qsxustc.github.io/context-atlas/?review=demo), or import your local repository and choose **Review a change**.
+2. Paste or load a Git unified diff. Atlas identifies changed paths, keeps available changed files, and suggests related JS/TS dependencies, imported-by modules, and tests.
+3. Review the change summary, selection reasons, omitted context, and any missing-file or patch-mismatch notices.
+4. Export Markdown or XML containing the filtered patch, review notes, and selected current files. Common secret patterns are redacted in both the patch and file contents by default.
+
+Generate a patch from the repository you want to review:
+
+```sh
+git diff --no-ext-diff --no-textconv HEAD > /tmp/change.patch
+```
+
+This includes tracked working-tree changes against `HEAD`; Git does not include untracked files in that command. Atlas reads the imported current files and never applies patches or checks out revisions. Load the working tree that matches the patch's new side. A mismatch notice means the checked hunk lines differ; no notice is not proof that the entire repository matches. The patch input is limited to 1 MiB and 500 file sections. Binary changes are skipped; combined merge diffs and malformed input are rejected. See [Review Pack limits](docs/architecture.md#review-pack).
 
 ### Try Focus Mode in a minute
 
@@ -96,11 +112,28 @@ Build context around a specific file, relative to the input directory:
 node bin/context-atlas.js ./repo --focus src/lib/storage.ts --budget 8000 --output storage-context.md
 ```
 
-Add `--no-callers` to leave out modules that import the focus file, or `--no-tests` to leave out suggested tests. These flags require `--focus`. Without `--budget`, a focus export includes every related candidate. With a budget, it keeps the focus file and fits related files around it; if the focus file alone cannot fit, the command fails before writing output. Counts of omitted files and unresolved references are reported on standard error.
+Add `--no-callers` to leave out modules that import the focus file, or `--no-tests` to leave out suggested tests. These flags require `--focus` or `--diff`. Without `--budget`, a focus export includes every related candidate. With a budget, it keeps the focus file and fits related files around it; if the focus file alone cannot fit, the command fails before writing output. Counts of omitted files and unresolved references are reported on standard error.
 
-Without `--focus`, the existing behavior is unchanged: no `--budget` exports all eligible files, while a budget applies the general file-path selection heuristic.
+Build a Review Pack from a Git diff file:
 
-The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. An existing `--output` file is excluded from its own export, including when its parent path uses a symlink alias. Diagnostics go to standard error so exported standard output can be piped into another command.
+```sh
+# Run inside the repository being reviewed.
+git diff --no-ext-diff --no-textconv HEAD > /tmp/change.patch
+# Run from the Context Atlas checkout, with ./repo pointing to that repository.
+node bin/context-atlas.js ./repo --diff /tmp/change.patch --budget 16000 --output review.md
+```
+
+Or pipe a diff directly to the CLI, using the path to your Context Atlas checkout:
+
+```sh
+git diff --no-ext-diff --no-textconv HEAD | node /path/to/context-atlas/bin/context-atlas.js . --diff - --budget 16000
+```
+
+`--diff` and `--focus` are mutually exclusive. Review exports always retain the filtered patch and available changed files; the budget also covers review notes and optional related context. If the mandatory content cannot fit, the command fails before writing output. Without `--budget`, all related candidates are included. `--no-callers` and `--no-tests` control optional context. Deletion-only patches can produce a pack even when no current files remain. Missing files, mismatches, skipped patch paths, omissions, and unresolved references are reported as counts on standard error.
+
+Without `--focus` or `--diff`, the existing behavior is unchanged: no `--budget` exports all eligible files, while a budget applies the general file-path selection heuristic.
+
+The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. An existing `--output` file and the raw `--diff` input file are excluded from the repository scan, including when their parent paths use a symlink alias. Diff files must be regular UTF-8 files; the CLI rejects input symlinks. An unreadable, oversized, or symlinked root `.gitignore` stops the export because its rules cannot be safely determined. Diagnostics go to standard error so exported standard output can be piped into another command.
 
 The CLI is useful when you want a context file directly from a terminal. The browser app is useful when you want to inspect and adjust the selection visually.
 
@@ -108,7 +141,7 @@ The CLI is useful when you want a context file directly from a terminal. The bro
 
 Token counts are **estimates**, not the output of a model-specific tokenizer. The budget includes the exported bundle's framing and file headers. Languages, source code, punctuation, and individual models can tokenize differently. Keep some room for your instructions, the conversation history, and the model's response.
 
-General automatic fitting uses a file-path heuristic that prioritizes README files, configuration, entry points, and source files. Focus Mode instead uses supported import relationships around a chosen file. Neither method understands your task, and a budget can exclude a useful dependency. Review the selection and any omission or unresolved-reference notices before exporting.
+General automatic fitting uses a file-path heuristic that prioritizes README files, configuration, entry points, and source files. Focus Mode uses supported import relationships around a chosen file; Review Pack combines those relationships around the current changed files. These methods do not understand your task, and a budget can exclude a useful dependency. Review the selection and any omission or unresolved-reference notices before exporting.
 
 Local redaction recognizes common credential patterns. It cannot guarantee detection of every secret or sensitive detail. Redaction is enabled again when you load another project or restore the demo. Review the exported text before sharing it with another service.
 

@@ -414,6 +414,210 @@ test('CLI review argument errors are clean and terminal control characters canno
   }
 });
 
+async function recipeFixture(t, extra = []) {
+  const result = await focusFixture(t);
+  const recipePath = path.join(result.temporary, 'focus.recipe.json');
+  const saved = run([result.directory, '--focus', 'src/focus.js', '--budget', '16000', '--save-recipe', recipePath, '--recipe-name', 'Storage workflow', ...extra]);
+  assert.equal(saved.status, 0, saved.stderr);
+  const recipe = JSON.parse(await readFile(recipePath, 'utf8'));
+  return { ...result, recipePath, recipe, saved };
+}
+
+test('CLI saves metadata-only recipes and replays exact current paths with default redaction', async t => {
+  const { directory, recipePath, recipe, saved } = await recipeFixture(t, ['--format', 'xml', '--no-redact']);
+  assert.equal(recipe.type, 'context-atlas-recipe');
+  assert.equal(recipe.version, 1);
+  assert.equal(recipe.name, 'Storage workflow');
+  assert.equal(recipe.budget, 16000);
+  assert.equal(recipe.format, 'xml');
+  assert.equal(recipe.files.length, 5);
+  assert.ok(recipe.files.every(file => Object.keys(file).sort().join(',') === 'fingerprint,path'));
+  const metadata = await readFile(recipePath, 'utf8');
+  for (const forbidden of [fakeToken, 'FOCUS_ROOT_SENTINEL', 'export const', 'redact']) assert.ok(!metadata.includes(forbidden), forbidden);
+  assert.ok(saved.stdout.includes(fakeToken), 'the explicit initial unredacted export still works');
+  assert.match(saved.stderr, /saved recipe with 5 file paths/);
+  await writeFile(path.join(directory, 'src/helper.js'), 'export const helper = () => "UPDATED_RECIPE_CONTENT_SENTINEL";\n');
+  await writeFile(path.join(directory, 'src/new-file.js'), 'UNSAVED_NEW_SOURCE_SENTINEL');
+  const replay = run([directory, '--recipe', recipePath]);
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.match(replay.stdout, /<context/);
+  assert.match(replay.stdout, /UPDATED_RECIPE_CONTENT_SENTINEL/);
+  assert.doesNotMatch(replay.stdout, /FOCUS_DEPENDENCY_SENTINEL|UNSAVED_NEW_SOURCE_SENTINEL|UNRELATED_TEST_SENTINEL/);
+  assert.ok(!replay.stdout.includes(fakeToken), 'a saved recipe never disables redaction');
+  assert.match(replay.stderr, /1 recipe files changed since saving/);
+  assert.ok(!replay.stderr.includes('UPDATED_RECIPE_CONTENT_SENTINEL'));
+  const explicit = run([directory, '--recipe', recipePath, '--format', 'markdown', '--budget', '20000', '--no-redact']);
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.doesNotMatch(explicit.stdout, /<context/);
+  assert.ok(explicit.stdout.includes(fakeToken));
+});
+
+test('CLI recipe refresh preserves its name and updates saved fingerprints', async t => {
+  const { temporary, directory, recipePath, recipe } = await recipeFixture(t);
+  await writeFile(path.join(directory, 'src/helper.js'), '// REFRESHED_HELPER_SENTINEL\n');
+  const refreshedPath = path.join(temporary, 'refreshed.recipe.json');
+  const result = run([directory, '--recipe', recipePath, '--save-recipe', refreshedPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const refreshed = JSON.parse(await readFile(refreshedPath, 'utf8'));
+  assert.equal(refreshed.name, recipe.name);
+  assert.equal(refreshed.projectName, recipe.projectName);
+  assert.notEqual(refreshed.files.find(file => file.path === 'src/helper.js').fingerprint, recipe.files.find(file => file.path === 'src/helper.js').fingerprint);
+  const replay = run([directory, '--recipe', refreshedPath]);
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.doesNotMatch(replay.stderr, /changed since saving/);
+});
+
+test('CLI recipes fail before replacing exports or recipes when paths or budgets no longer fit', async t => {
+  const { temporary, directory, recipePath, recipe } = await recipeFixture(t);
+  const output = path.join(temporary, 'existing.md');
+  const savedPath = path.join(temporary, 'existing.recipe.json');
+  const savedMetadata = JSON.stringify(recipe);
+  await writeFile(output, 'PRESERVE_EXISTING_RECIPE_EXPORT');
+  await writeFile(savedPath, savedMetadata);
+  const args = [directory, '--recipe', recipePath, '--output', output, '--save-recipe', savedPath];
+  const tooSmall = run([...args, '--budget', '1']);
+  assert.notEqual(tooSmall.status, 0);
+  assert.equal(tooSmall.stdout, '');
+  assert.match(tooSmall.stderr, /exceed.*token budget/);
+  await writeFile(path.join(directory, 'src/helper.js'), '// LARGE_UPDATED_CONTENT\n' + 'const value = "long source text";\n'.repeat(4000));
+  const tooLarge = run(args);
+  assert.notEqual(tooLarge.status, 0);
+  assert.match(tooLarge.stderr, /exceed.*token budget/);
+  const increased = run([directory, '--recipe', recipePath, '--budget', '100000']);
+  assert.equal(increased.status, 0, increased.stderr);
+  assert.match(increased.stdout, /LARGE_UPDATED_CONTENT/);
+  await rm(path.join(directory, 'src/helper.js'));
+  const missing = run(args);
+  assert.notEqual(missing.status, 0);
+  assert.equal(missing.stdout, '');
+  assert.match(missing.stderr, /1 missing or ineligible file paths/);
+  assert.equal(await readFile(output, 'utf8'), 'PRESERVE_EXISTING_RECIPE_EXPORT');
+  assert.equal(await readFile(savedPath, 'utf8'), savedMetadata);
+});
+
+test('CLI excludes recipe inputs and save destinations through canonical parent aliases', async t => {
+  const { temporary, directory, recipe } = await recipeFixture(t);
+  const alias = path.join(temporary, 'project-alias');
+  await symlink(directory, alias, 'dir');
+  const input = path.join(alias, 'input.recipe.json');
+  const savePath = path.join(alias, 'saved.recipe.json');
+  await writeFile(input, JSON.stringify({ ...recipe, name: 'INPUT_RECIPE_METADATA_SENTINEL' }));
+  await writeFile(savePath, JSON.stringify({ ...recipe, name: 'SAVE_RECIPE_METADATA_SENTINEL' }));
+  const general = run([directory, '--save-recipe', savePath]);
+  assert.equal(general.status, 0, general.stderr);
+  assert.doesNotMatch(general.stdout, /SAVE_RECIPE_METADATA_SENTINEL|saved\.recipe\.json/);
+  const replay = run([directory, '--recipe', input, '--save-recipe', savePath]);
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.doesNotMatch(replay.stdout, /INPUT_RECIPE_METADATA_SENTINEL|SAVE_RECIPE_METADATA_SENTINEL|input\.recipe\.json|saved\.recipe\.json/);
+  const generated = JSON.parse(await readFile(savePath, 'utf8'));
+  assert.ok(generated.files.every(file => !file.path.endsWith('.recipe.json')));
+});
+
+test('CLI recipe inputs reject unsafe files and malformed metadata without modifying output', async t => {
+  const { temporary, directory, recipePath, recipe } = await recipeFixture(t);
+  const output = path.join(temporary, 'existing.md');
+  await writeFile(output, 'PRESERVE_INVALID_RECIPE_EXPORT');
+  const badUtf8 = path.join(temporary, 'invalid.recipe.json');
+  await writeFile(badUtf8, Buffer.from([0xff, 0xfe]));
+  const oversized = path.join(temporary, 'oversized.recipe.json');
+  await writeFile(oversized, 'x'.repeat(1024 * 1024 + 1));
+  const linked = path.join(temporary, 'linked.recipe.json');
+  await symlink(recipePath, linked);
+  for (const input of [badUtf8, oversized, linked, directory]) {
+    const result = run([directory, '--recipe', input, '--output', output]);
+    assert.notEqual(result.status, 0, input);
+    assert.equal(result.stdout, '');
+  }
+  const malformed = path.join(temporary, 'malformed.recipe.json');
+  for (const metadata of [
+    'not JSON',
+    JSON.stringify({ ...recipe, redact: false }),
+    JSON.stringify({ ...recipe, files: [] }),
+    JSON.stringify({ ...recipe, files: [{ ...recipe.files[0], path: '../outside.js' }] }),
+    JSON.stringify({ ...recipe, files: [{ ...recipe.files[0], path: '.env' }] }),
+    JSON.stringify({ ...recipe, files: [{ ...recipe.files[0], path: '/absolute.js' }] }),
+  ]) {
+    await writeFile(malformed, metadata);
+    const result = run([directory, '--recipe', malformed, '--output', output]);
+    assert.notEqual(result.status, 0, metadata);
+    assert.equal(result.stdout, '');
+  }
+  assert.equal(await readFile(output, 'utf8'), 'PRESERVE_INVALID_RECIPE_EXPORT');
+});
+
+test('CLI recipe path collisions and invalid save metadata cannot overwrite source or output', async t => {
+  const { temporary, directory, recipePath } = await recipeFixture(t);
+  const output = path.join(temporary, 'existing.md');
+  await writeFile(output, 'PRESERVE_COLLISION_EXPORT');
+  const source = path.join(directory, 'src/index.js');
+  const originalSource = await readFile(source, 'utf8');
+  await symlink(temporary, path.join(temporary, 'parent-alias'), 'dir');
+  const aliasedRecipe = path.join(temporary, 'parent-alias', path.basename(recipePath));
+  for (const args of [
+    [directory, '--recipe', recipePath, '--output', recipePath],
+    [directory, '--recipe', recipePath, '--save-recipe', recipePath],
+    [directory, '--recipe', recipePath, '--output', aliasedRecipe],
+    [directory, '--save-recipe', recipePath, '--output', aliasedRecipe],
+    [directory, '--save-recipe', output, '--output', output],
+    [directory, '--save-recipe', source, '--output', output],
+    [directory, '--save-recipe', path.join(temporary, 'new.recipe.json'), '--recipe-name', 'x'.repeat(81), '--output', output],
+  ]) {
+    const result = run(args);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+  }
+  assert.equal(await readFile(source, 'utf8'), originalSource);
+  assert.equal(await readFile(output, 'utf8'), 'PRESERVE_COLLISION_EXPORT');
+});
+
+test('CLI saving an unbudgeted selection chooses a replayable budget without storing source text', async t => {
+  const { temporary, directory } = await fixture(t);
+  const recipePath = path.join(temporary, 'all.recipe.json');
+  const saved = run([directory, '--save-recipe', recipePath]);
+  assert.equal(saved.status, 0, saved.stderr);
+  const recipe = JSON.parse(await readFile(recipePath, 'utf8'));
+  assert.ok(recipe.budget > 16000, 'a large complete export must receive a budget large enough to replay');
+  const replay = run([directory, '--recipe', recipePath]);
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.match(replay.stdout, /LARGE_NOTES_SENTINEL/);
+  assert.doesNotMatch(await readFile(recipePath, 'utf8'), /LARGE_NOTES_SENTINEL/);
+});
+
+test('CLI review recipes save current file selections without their patch or analysis', async t => {
+  const { temporary, directory, patchPath } = await reviewFixture(t);
+  const recipePath = path.join(temporary, 'review.recipe.json');
+  const saved = run([directory, '--diff', patchPath, '--save-recipe', recipePath]);
+  assert.equal(saved.status, 0, saved.stderr);
+  assert.match(saved.stdout, /oldHelper\(\)/);
+  const recipe = JSON.parse(await readFile(recipePath, 'utf8'));
+  assert.ok(recipe.files.length > 0);
+  assert.ok(!JSON.stringify(recipe).includes('oldHelper'));
+  const replay = run([directory, '--recipe', recipePath]);
+  assert.equal(replay.status, 0, replay.stderr);
+  assert.match(replay.stdout, /FOCUS_ROOT_SENTINEL/);
+  assert.doesNotMatch(replay.stdout, /oldHelper\(\)|diff --git/);
+});
+
+test('CLI recipe argument errors require explicit compatible file-based options', async t => {
+  const { directory, recipePath } = await recipeFixture(t);
+  for (const args of [
+    [directory, '--recipe'],
+    [directory, '--save-recipe'],
+    [directory, '--recipe-name', 'Named'],
+    [directory, '--recipe', '-'],
+    [directory, '--save-recipe', '-'],
+    [directory, '--recipe', recipePath, '--focus', 'src/focus.js'],
+    [directory, '--recipe', recipePath, '--diff', '-'],
+    [directory, '--recipe', recipePath, '--no-callers'],
+    [directory, '--recipe', recipePath, '--no-tests'],
+  ]) {
+    const result = run(args);
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /Context Atlas:/);
+  }
+});
+
 async function freePort() {
   const server = createServer();
   server.listen(0, '127.0.0.1');

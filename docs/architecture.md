@@ -18,12 +18,15 @@ Context Atlas is a static browser app and a Node CLI. Both use the same dependen
 | `src/review-ui.js` | Local patch paste/file input, change summary, explicit rebuild, selection reasons, warnings, and undo. |
 | `src/review-worker.js` | Local diff parsing and review planning using a cached project dependency graph. |
 | `src/review-demo.js` | A synthetic patch for the sample repository, opened directly through `?review=demo`. |
+| `src/recipes.js` | Strict portable recipe validation/serialization, content fingerprints, and resolving saved paths against current analyzed files. Shared by browser and CLI. |
+| `src/recipe-ui.js` | Browser recipe library, named save/update, apply reports, JSON import/export, and deletion undo within the open library session. |
+| `src/recipe-store.js` | Bounded localStorage recipe persistence and validation, with recoverable handling when storage is unavailable or invalid. |
 | `src/import-utils.js` | Browser import preparation, default/custom path filtering, bounded directory enumeration and ignore-file reads, folder-relative paths, and scoping nested `.gitignore` patterns. |
 | `src/treemap.js` | Deterministic balanced slice-and-dice rectangle layout. The UI uses estimated file tokens as weights, with a minimum weight for tiny files. |
 | `src/demo.js` | Synthetic Orbit Notes repository content, including a deliberately fake credential for trying redaction. Its code is displayed as text, never executed. |
 | `src/i18n.js` | Chinese interface translations and dynamic English/Chinese messages. Static English labels live in `index.html`. |
 | `src/style.css` | Design tokens, layout, responsive styles, and interaction states. |
-| `bin/context-atlas.js` | CLI arguments, bounded local filesystem scanning, output writing, and diagnostics. Uses `src/core.js` for analysis and export. |
+| `bin/context-atlas.js` | CLI arguments, bounded local filesystem scanning, recipe loading/saving, output writing, and diagnostics. Uses shared modules for analysis, planning, recipes, and export. |
 | `scripts/serve.mjs` | Local HTTP server for source development and `dist/` preview. |
 | `scripts/build.mjs` | Copies the app and public assets into `dist/` for static hosting. |
 
@@ -39,6 +42,8 @@ Browser folder picker / drag-and-drop          Node filesystem scan
                      analyzeFile → file records
                                   ▼
           manual selection / general fitting / focus or review planning
+                                  │
+                    save / apply explicit recipe paths
                                   ▼
                  buildContext / buildReviewContext(format, redaction setting)
                          ┌────────┴────────┐
@@ -51,7 +56,7 @@ The browser imports at most 5,000 readable UTF-8 text files, with limits of 1 Mi
 
 Drag-and-drop enumeration has a separate limit of 100,000 entries, covering files and directories. The collector lists a directory's children before processing them so a `.gitignore` in a later reader batch still applies. If the listing is incomplete, partial results are accepted only when that directory's own `.gitignore` was found and successfully read; otherwise the directory is skipped because its rules may be missing. Browser imports accept at most 1 MiB of `.gitignore` text in aggregate. A directory whose ignore file is unreadable or exceeds the remaining allowance is also skipped. The UI reports that the import was limited; an import with no readable files preserves the current project.
 
-The CLI applies the same 1 MiB per-file and 50 MiB total text limits without a file-count cap, skips symlinks, and reads `.gitignore` from the input root only. It resolves the output and diff-input parent directories before scanning, so previous exports and raw patch inputs are excluded even if those paths use a symlinked ancestor. Output and diff-input files that are themselves symlinks are rejected. Unreadable, oversized, or non-regular root `.gitignore` files stop the command rather than silently discarding their rules.
+The CLI applies the same 1 MiB per-file and 50 MiB total text limits without a file-count cap, skips symlinks, and reads `.gitignore` from the input root only. It resolves output, diff-input, recipe-input, and recipe-save parent directories before scanning, so context artifacts and recipe metadata are excluded even if those paths use a symlinked ancestor. Input and output files that are themselves symlinks are rejected. Unreadable, oversized, or non-regular root `.gitignore` files stop the command rather than silently discarding their rules.
 
 Ignore handling supports common glob patterns on a best-effort basis rather than all Git ignore semantics; built-in exclusions remain in force. Matching distinguishes files from directories: `cache/` excludes a directory and its descendants but leaves a regular file named `cache` eligible, while a directory named `icons.png` can contain readable source files. Matching uses non-backtracking dynamic programming, skips rules longer than 2,048 characters, and evaluates at most 4,096 effective custom rules.
 
@@ -103,6 +108,42 @@ The browser performs parsing and graph planning in a local worker with project-s
 
 A typical workflow is `git diff --no-ext-diff --no-textconv HEAD > /tmp/change.patch`, then `node bin/context-atlas.js ./repo --diff /tmp/change.patch --budget 16000 --output review.md`. Generate the patch in the repository being reviewed and import its matching working tree. That Git command compares tracked working-tree changes against `HEAD` and does not include untracked files. For pipelines, use `git diff --no-ext-diff --no-textconv HEAD | node /path/to/context-atlas/bin/context-atlas.js . --diff -`.
 
+## Context Recipes
+
+A Context Recipe describes a reusable explicit file selection. It stores a name, a display-only project label, an estimated token budget, an export format, and each selected repository-relative path with a content fingerprint. It stores no source contents, patch contents, generated review notes, credential values extracted from source, absolute repository location, or redaction preference. Repository files still need to be imported or scanned before a recipe can be applied.
+
+The portable JSON schema is versioned independently from the application release:
+
+```json
+{
+  "type": "context-atlas-recipe",
+  "version": 1,
+  "name": "Storage context",
+  "projectName": "my-app",
+  "budget": 8000,
+  "format": "markdown",
+  "files": [
+    { "path": "src/lib/storage.ts", "fingerprint": "fnv1a64:0123456789abcdef" }
+  ]
+}
+```
+
+The fingerprint above illustrates the shape rather than a real file hash. Fingerprints use FNV-1a 64-bit over UTF-8 source text, serialized as `fnv1a64:` followed by 16 lowercase hexadecimal digits. They are noncryptographic change hints: collisions are possible, and fingerprints do not prove authenticity, identify a branch, or recover previous contents. Project labels are informational and do not bind a recipe to a checkout. Paths and user-entered names can reveal project information even though source text is absent.
+
+`src/recipes.js` validates imports, creates recipes from the selected analyzed files, serializes only accepted fields, and resolves a recipe against the current analyzed file records. The schema rejects unknown fields, unsupported versions/formats, malformed fingerprints, duplicate or unsafe paths, and default-excluded paths. Paths use canonical relative slash form; imported paths are never executed, opened directly, or used to bypass the repository's current import filters. Recipe resolution can only select files already present in the accepted file list.
+
+Recipe JSON is limited to 1 MiB of UTF-8 text and between 1 and 5,000 selected files. Both the raw input and the canonical serialized recipe must fit the byte limit, so every accepted imported recipe can be exported again. Serialization prefers formatted JSON with a trailing newline, falls back to compact JSON near the limit, and omits that newline when the compact JSON reaches exactly 1 MiB. Recipe names accept at most 80 Unicode characters, project labels at most 120, and paths at most 5,000 UTF-16 code units. The budget must be an integer between 500 and 2,000,000, and the format must be `markdown` or `xml`. These limits apply to portable browser and CLI recipes; the broader CLI repository scan still has no file-count cap.
+
+Applying a recipe selects every available saved path using its current content, reports changed, unchanged, and missing paths, and computes a conservative estimated export cost. The saved fingerprints remain unchanged until the user explicitly updates the recipe from the current selection. An over-budget recipe is reported without silently trimming paths. The browser lets the user inspect available files and missing paths and adjust the selection or budget; the CLI requires all saved paths to be available and the complete export to fit before writing.
+
+Recipes preserve the files selected at save time. A selection prepared with Focus Mode does not become a command to recalculate dependencies after future imports. A selection prepared with Review Pack does not retain its diff or review state: reapplying it clears that plan and produces a normal files-only export. A fresh diff is required for a new Review Pack. The same explicit update operation refreshes the selected paths, fingerprints, budget, and format together.
+
+The browser retains at most 30 recipes in localStorage for the current site origin and browser profile, with a 4 MiB serialized-library limit. Saving, updating, importing, and deleting recipes are explicit operations; a deletion can be undone within the open library session. An unreadable or invalid library preserves the raw storage rather than overwriting it, and disables library saves/imports until a subsequent read succeeds. A write failure leaves the previous library intact and allows another attempt, such as after reducing the library size. Downloading the current selection directly as recipe JSON remains available in either case. Importing or applying repository files does not persist source contents. Page closure releases the in-memory repository and patch data while saved recipe metadata remains; clearing site storage removes the collection. Recipes are not synced to a server or another browser profile. Exported recipe JSON is a separate file created at the user's request.
+
+The CLI accepts `--recipe <file>` as a mutually exclusive alternative to `--focus` or `--diff`; `--no-callers` and `--no-tests` cannot accompany it. The saved budget and format provide defaults, while explicit `--budget` and `--format` override them. Redaction remains enabled by default and can only be disabled explicitly with `--no-redact`. Changed content produces a count-only standard-error warning, while missing/ineligible paths or a final export exceeding the estimated budget fail before writing output. Recipe inputs must be regular valid-UTF-8 files up to 1 MiB; symlink inputs and `--recipe -` are rejected.
+
+`--save-recipe <file>` stores the final file selection from general fitting, Focus Mode, Review Pack, or an applied recipe. `--recipe-name <name>` requires a save destination. With no explicit or inherited recipe budget, saving chooses a budget sufficient for the selection, with a minimum of 16,000 and the shared maximum of 2,000,000. Review-generated sections are excluded from the saved selection. Recipe, patch, context output, and recipe-save paths are canonicalized and excluded from the repository scan; conflicting destinations are rejected. A save cannot overwrite an existing file unless that file validates as a recipe.
+
 ## Browser interaction and local serving
 
 Individual file selection updates existing list and map controls rather than rebuilding them. Rendering that does replace controls restores keyboard focus where the corresponding file remains visible. The inspector reuses its displayed source when the active file and language have not changed.
@@ -113,6 +154,6 @@ The development and preview server binds to `127.0.0.1`. It rejects traversal, h
 
 ## Verification and deployment
 
-`npm test` runs Node's built-in test runner. Tests cover core behavior, import filtering and traversal, dependency scanning/resolution, focus planning, Git patch parsing/filtering/redaction, review selection/export, treemap layout, and CLI/server behavior. `npm run build` produces `dist/`; `npm run preview` serves it locally.
+`npm test` runs Node's built-in test runner. Tests cover core behavior, import filtering and traversal, dependency scanning/resolution, focus planning, Git patch parsing/filtering/redaction, review selection/export, recipe validation/resolution/serialization, treemap layout, and CLI/server behavior. `npm run build` produces `dist/`; `npm run preview` serves it locally.
 
 The CI workflow tests and builds the project. The Pages workflow deploys the static build on pushes to `main` or manual dispatch. Before using it, set **Repository Settings → Pages → Source → GitHub Actions** in the published repository.

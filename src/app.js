@@ -1,4 +1,5 @@
 import { createReviewUI } from './review-ui.js';
+import { createRecipeUI } from './recipe-ui.js';
 import { buildReviewContext, calculateReviewSelection } from './review.js';
 import { createFocusUI } from './focus-ui.js';
 import { analyzeFile, estimateTokens, calculateSelection, suggestSelection, buildContext } from './core.js';
@@ -7,7 +8,7 @@ import { layoutTreemap } from './treemap.js';
 import { zh, en } from './i18n.js';
 import { prepareImport, readIgnoreRules, collectDroppedEntries, folderRelativePath } from './import-utils.js';
 
-let focusUI,reviewUI,workflow='focus',importRules={patterns:[],blockedDirectories:[]};
+let focusUI,reviewUI,recipeUI,workflow='focus',importRules={patterns:[],blockedDirectories:[]};
 const $ = id => document.getElementById(id);
 const defaults = new Map([...document.querySelectorAll('[data-i18n]')].map(el=>[el,el.innerHTML]));
 const MAX_FILE = 1024 * 1024, MAX_TOTAL = 50 * MAX_FILE, MAX_FILES = 5000;
@@ -34,7 +35,7 @@ function applyLanguage() {
 }
 function loadDemo(showToast=false) {
  if(importing || collecting) return toast(t('busy'));
- resetExport();focusUI?.resetProject();reviewUI?.resetProject();importRules={patterns:[],blockedDirectories:[]};
+ resetExport();focusUI?.resetProject();reviewUI?.resetProject();recipeUI?.resetProject();importRules={patterns:[],blockedDirectories:[]};
  projectName=demoProject.name; files=demoProject.files.map(analyzeFile); selected=new Set(files.filter(f=>!f.path.startsWith('tests/')&&!f.path.startsWith('docs/')&&!f.path.endsWith('sync.ts')).map(f=>f.id));
  activeId='src/components/Editor.tsx';query='';$('search').value='';isDemo=true;render();if(showToast)toast(t('demoLoaded'));
 }
@@ -53,7 +54,7 @@ function render() {
  $('project-tokens').textContent=t('totalTokens',{n:num(files.reduce((n,f)=>n+f.tokens,0))});
  $('map-filter').textContent=query?t('filter'):(locale==='zh'?zh.allFiles:'all files');
  renderImportStatus();
- renderTree();renderMap();renderInspector();renderStats();focusUI?.render();reviewUI?.render();renderWorkflow();
+ renderTree();renderMap();renderInspector();renderStats();focusUI?.render();reviewUI?.render();recipeUI?.render();renderWorkflow();
 }
 function renderTree() {
  const fragment=document.createDocumentFragment(), visible=visibleFiles().sort((a,b)=>a.path.localeCompare(b.path)); let lastDir=null;
@@ -112,6 +113,7 @@ function renderStats() {
  focusUI?.refreshBudget();reviewUI?.refreshStatus();
  $('fit-note').textContent=reviewUI?.getPlan()?(locale==='zh'?'按预算重建，优先保留 diff 和改动文件。':'Rebuilds the pack, keeping the diff and changed files first.'):(locale==='zh'?zh.fitNote:'Prioritizes docs, entry points & source files.');
  $('export-button').disabled=(!stats.count&&!reviewUI?.getPlan())||importing||collecting||focusUI?.isBusy()||reviewUI?.isBusy();for(const el of document.querySelectorAll('[data-budget]'))el.classList.toggle('active',Number(el.dataset.budget)===limit);
+ recipeUI?.refresh();
 }
 function updateFileStates() {
  for(const row of $('file-tree').querySelectorAll('.file-row')){row.classList.toggle('active',row.dataset.fileId===activeId);row.querySelector('input').checked=selected.has(row.dataset.fileId);}
@@ -122,7 +124,7 @@ function toggleFile(id,checked=!selected.has(id)) {focusUI?.manualChange();if(ch
 function refreshExport() {
  const redact=$('redact-checkbox').checked,plan=reviewUI?.getPlan(), output=plan?buildReviewContext(files,selected,plan,{format,redact,projectName}):buildContext(files,selected,{format,redact,projectName});$('export-preview').value=output;
  const stats=selectionStats();$('export-summary').textContent=t('summary',{n:stats.count,t:num(estimateTokens(output)),b:bytes(new TextEncoder().encode(output).length),r:t(redact?'redacted':'unredacted')});
- const warnings=[];if(!redact&&stats.risks)warnings.push(t('redactionOff'));if(estimateTokens(output)>budget())warnings.push(t('budgetWarning'));
+ const warnings=[...(recipeUI?.exportNotes()||[])];if(!redact&&stats.risks)warnings.push(t('redactionOff'));if(estimateTokens(output)>budget())warnings.push(t('budgetWarning'));
  $('export-warning').hidden=!warnings.length;$('export-warning').textContent=warnings.join(' ');
  for(const el of document.querySelectorAll('[data-format]'))el.classList.toggle('active',el.dataset.format===format);
 }
@@ -149,7 +151,7 @@ async function importFiles(source, name, collection={}) {
    }catch{skipped++;}
   }
   if(!next.length){toast(t('importEmpty')+(truncated?' '+t('importLimited'):''));return;}
-  resetExport();focusUI?.resetProject();reviewUI?.resetProject();importRules={patterns,blockedDirectories};projectName=name||'my-project';files=next;selected=new Set(suggestSelection(files,budget()));activeId=files.find(f=>selected.has(f.id))?.id||files[0].id;query='';$('search').value='';isDemo=false;importRecord={n:files.length,s:skipped,truncated};render();
+  resetExport();focusUI?.resetProject();reviewUI?.resetProject();recipeUI?.resetProject();importRules={patterns,blockedDirectories};projectName=name||'my-project';files=next;selected=new Set(suggestSelection(files,budget()));activeId=files.find(f=>selected.has(f.id))?.id||files[0].id;query='';$('search').value='';isDemo=false;importRecord={n:files.length,s:skipped,truncated};render();
   toast(t('importDone',{n:num(files.length),s:num(skipped)})+(truncated?' '+t('importLimited'):''));
  }catch{toast(t('importFail'));}
  finally{importing=false;$('import-button').disabled=false;$('import-button').querySelector('span').textContent=locale==='zh'?zh.open:'Open folder';$('folder-input').value='';renderImportStatus();renderStats();}
@@ -172,7 +174,7 @@ $('toggle-active').addEventListener('click',()=>{if(activeId)toggleFile(activeId
 for(const el of document.querySelectorAll('[data-budget]'))el.addEventListener('click',()=>{$('budget').value=el.dataset.budget;renderStats();});
 $('fit-button').addEventListener('click',()=>{if(reviewUI?.getPlan())return reviewUI.run();focusUI?.manualChange();selected=new Set(suggestSelection(files,budget()));reviewUI?.manualChange();render();toast(selected.size?t('fitDone',{n:selected.size}):t('noBudget'));});
 $('export-button').addEventListener('click',showExport);$('redact-checkbox').addEventListener('change',refreshExport);
-for(const el of document.querySelectorAll('[data-format]'))el.addEventListener('click',()=>{format=el.dataset.format;refreshExport();});
+for(const el of document.querySelectorAll('[data-format]'))el.addEventListener('click',()=>{format=el.dataset.format;refreshExport();recipeUI?.refresh();});
 $('copy-button').addEventListener('click',copyContext);$('download-button').addEventListener('click',downloadContext);$('help-button').addEventListener('click',()=>$('help-dialog').showModal());
 for(const el of document.querySelectorAll('.close-dialog'))el.addEventListener('click',()=>el.closest('dialog').close());
 for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('click',event=>{const rect=dialog.getBoundingClientRect();if(event.target===dialog&&(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom))dialog.close();});
@@ -185,7 +187,7 @@ function setWorkflow(value){
  if(value!==workflow){workflow=value;if(value==='focus')reviewUI?.clear();else focusUI?.manualChange();renderStats();}
  renderWorkflow();
 }
-function applyContextSelection(ids,id){selected=new Set(ids);activeId=id;query='';$('search').value='';render();if($('export-dialog').open)refreshExport();}
+function applyContextSelection(ids,id){recipeUI?.manualChange();selected=new Set(ids);activeId=id;query='';$('search').value='';render();if($('export-dialog').open)refreshExport();}
 $('workflow-focus').addEventListener('click',()=>setWorkflow('focus'));$('workflow-review').addEventListener('click',()=>setWorkflow('review'));
 focusUI=createFocusUI({
  getFiles:()=>files,getSelection:()=>selected,getActiveId:()=>activeId,getBudget:budget,getLocale:()=>locale,isImporting:()=>importing||collecting,
@@ -196,6 +198,14 @@ reviewUI=createReviewUI({
  getFiles:()=>files,getSelection:()=>selected,getActiveId:()=>activeId,getBudget:budget,getLocale:()=>locale,getRules:()=>importRules,isImporting:()=>importing||collecting,
  applySelection:applyContextSelection,onBusyChange:renderStats,onStart:()=>setWorkflow('review'),
  inspectFile:setActive,loadDemo,toast,
+});
+recipeUI=createRecipeUI({
+ getFiles:()=>files,getSelection:()=>selected,getBudget:budget,getFormat:()=>format,getProjectName:()=>projectName,getLocale:()=>locale,
+ isBusy:()=>importing||collecting||Boolean(focusUI?.isBusy()||reviewUI?.isBusy()),inspectFile:setActive,toast,
+ applyRecipe:(recipe,ids)=>{
+  resetExport();focusUI.manualChange();reviewUI.clear();workflow='focus';
+  $('budget').value=recipe.budget;format=recipe.format;selected=new Set(ids);activeId=ids.includes(activeId)?activeId:ids[0];query='';$('search').value='';render();
+ },
 });
 loadDemo();
 // Deep links address only public built-in examples, never imported repository content.

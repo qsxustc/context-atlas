@@ -26,6 +26,8 @@ You know which problem you want an AI assistant to solve. Deciding which files t
 
 **Context Atlas makes that choice visible.** Import a Git diff to build a **Review Pack**: the patch, current changed files, and related dependencies, imported-by modules, and tests in one budgeted bundle. Or pick a single file with **Focus Mode**. See why each file belongs, inspect what is missing, and export context for the AI assistant you already use. Everything runs locally.
 
+Save a useful selection as a **Context Recipe** to make the next session faster. Reload your repository, apply the recipe to its current files, and check what has changed before exporting. Recipes work in the browser and CLI, so a repeatable context workflow can follow you from visual exploration to the terminal.
+
 <p align="center">
   <img src="assets/review-demo.jpg" alt="Review Pack collecting two changed files, dependencies, importing modules and tests within a context budget" width="1100">
 </p>
@@ -34,6 +36,7 @@ You know which problem you want an AI assistant to solve. Deciding which files t
 
 - **Prepare an AI code review.** Import a Git diff, retain the changes and current changed files, and fit related context around them. Check missing files and patch/current-file mismatches before exporting.
 - **Build context around a file.** Focus Mode follows supported JS/TS imports, finds modules that import the focus file and related tests, and explains each candidate.
+- **Reuse context across sessions.** Save named Context Recipes with explicit file paths, a budget, and an export format. Reapply them to current files, inspect changed or missing paths, and move recipes between the browser and CLI as JSON.
 - **Explore a repository visually.** A treemap turns estimated file token costs into something you can scan.
 - **Choose your context deliberately.** Search the file list, select individual files, and see how much each choice costs.
 - **Fit a budget.** Set a target and use automatic fitting to prepare a selection within the estimated budget.
@@ -42,7 +45,23 @@ You know which problem you want an AI assistant to solve. Deciding which files t
 - **Start without a repository.** Open the built-in demo to try the workflow immediately.
 - **Use English or 简体中文.** Switch the interface language in the app.
 
-The app runs entirely in your browser. It has no backend, tracking, external fonts, or API-key requirement. Repository contents are read locally and are not uploaded by Context Atlas. The development tools and CLI also have **zero package dependencies**.
+The app runs entirely in your browser. It has no backend, tracking, external fonts, or API-key requirement. Repository contents are read locally and are not uploaded by Context Atlas. Source and imported patch contents stay in memory; saved recipe names, project labels, paths, content fingerprints, budgets, and export formats persist in this site's browser storage until you delete them or clear its storage. Recipes contain no source text, patch text, or extracted credential values. The development tools and CLI also have **zero package dependencies**.
+
+### Save a Context Recipe for next time
+
+<p align="center">
+  <img src="assets/recipe-demo.jpg" alt="Context Recipes library with a saved four-file selection and another recipe reporting changed and missing current files" width="1100">
+</p>
+
+1. Load your repository and prepare a selection manually, with Focus Mode, or with Review Pack.
+2. Set the budget and export format, then save the selected files with a name such as “Storage changes” or “API debugging”.
+3. In a later session, reload the repository and apply the recipe. Atlas selects matching current files and reports paths whose content has changed or that are unavailable under the current import rules.
+4. Inspect the report and adjust the selection. Explicitly update the recipe from the current selection when you want to refresh its paths, settings, and fingerprint baseline.
+5. Export recipe JSON for a backup or CLI use, or import a recipe created elsewhere.
+
+The browser stores at most **30 recipes**, locally for the current site and browser profile. Reopening the page restores recipes, but you must import repository files again. Applying a recipe uses the current file contents and leaves its saved baseline intact until an explicit update. Fingerprints detect content differences; they do not identify a Git branch, prove file authenticity, or preserve a historical revision. Available paths are selected even when their content changed. Missing paths are reported rather than replaced with other files.
+
+A recipe is a **files-only snapshot of a selection** and requires at least one selected current file. Saving a Focus or Review selection retains the selected file paths, rather than instructions to rebuild an import graph. It does not save the original diff, review notes, or source contents. Reapplying a Review-derived recipe exports current files only; import a fresh diff to prepare another Review Pack. Recipe JSON can expose file names and the name you chose, so inspect its metadata before sharing it. See [recipe behavior and limits](docs/architecture.md#context-recipes).
 
 ### Turn your changes into a Review Pack
 
@@ -131,9 +150,26 @@ git diff --no-ext-diff --no-textconv HEAD | node /path/to/context-atlas/bin/cont
 
 `--diff` and `--focus` are mutually exclusive. Review exports always retain the filtered patch and available changed files; the budget also covers review notes and optional related context. If the mandatory content cannot fit, the command fails before writing output. Without `--budget`, all related candidates are included. `--no-callers` and `--no-tests` control optional context. Deletion-only patches can produce a pack even when no current files remain. Missing files, mismatches, skipped patch paths, omissions, and unresolved references are reported as counts on standard error.
 
-Without `--focus` or `--diff`, the existing behavior is unchanged: no `--budget` exports all eligible files, while a budget applies the general file-path selection heuristic.
+Reuse a browser-exported or CLI-created recipe against a local repository:
 
-The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. An existing `--output` file and the raw `--diff` input file are excluded from the repository scan, including when their parent paths use a symlink alias. Diff files must be regular UTF-8 files; the CLI rejects input symlinks. An unreadable, oversized, or symlinked root `.gitignore` stops the export because its rules cannot be safely determined. Diagnostics go to standard error so exported standard output can be piped into another command.
+```sh
+node bin/context-atlas.js ./repo --recipe storage.recipe.json --output storage-context.md
+```
+
+The recipe's saved budget and format are defaults; explicit `--budget` and `--format` options override them. The CLI retains every saved path and uses its current content. It warns on standard error when fingerprints have changed, and fails before writing when a path is missing or ineligible, or the complete export exceeds the estimated budget. `--recipe` cannot be combined with `--focus`, `--diff`, `--no-callers`, or `--no-tests`. Redaction is enabled by default for every run; a recipe does not persist a redaction setting.
+
+Save the final selected files as a portable recipe while creating a context bundle:
+
+```sh
+node bin/context-atlas.js ./repo --focus src/lib/storage.ts --budget 8000 \
+  --save-recipe storage.recipe.json --recipe-name "Storage context" --output storage-context.md
+```
+
+`--save-recipe` also works with general selection, `--diff`, or `--recipe`; Review Pack saves its selected current files without the patch or generated notes. `--recipe-name` requires `--save-recipe`. Without an explicit or inherited recipe budget, saving chooses one that can cover the selected files, with a minimum of 16,000 estimated tokens. A recipe input must be a regular UTF-8 JSON file; both input JSON and serialized exports are limited to 1 MiB. Exports use compact JSON when formatting would exceed that limit. Input symlinks and standard input are unsupported. The CLI refuses to overwrite an existing save destination unless it is already a valid recipe, and rejects conflicting recipe, patch, and output destinations.
+
+Without `--focus`, `--diff`, or `--recipe`, no `--budget` exports all eligible files, while a budget applies the general file-path selection heuristic.
+
+The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. The `--output`, `--diff`, `--recipe`, and `--save-recipe` paths are excluded from the repository scan, including when their parent paths use a symlink alias. Diff and recipe inputs must be regular UTF-8 files; the CLI rejects input symlinks. An unreadable, oversized, or symlinked root `.gitignore` stops the export because its rules cannot be safely determined. Diagnostics go to standard error so exported standard output can be piped into another command.
 
 The CLI is useful when you want a context file directly from a terminal. The browser app is useful when you want to inspect and adjust the selection visually.
 

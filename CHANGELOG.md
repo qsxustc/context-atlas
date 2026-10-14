@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-10-14
+
+- Add Context Recipes: save a named file selection, estimated budget, export format, and content fingerprints, then reuse it against freshly imported current files.
+- Keep up to 30 recipes in browser local storage, with explicit update/delete and portable JSON import/export. Recipes contain no repository source, patches, generated review notes, or credential values extracted from source.
+- Report changed and missing saved paths when applying a recipe, preserve its baseline until explicitly updated, and show estimated budget shortfalls without silently trimming the selection.
+- Share strict, bounded recipe validation and file resolution between browser and CLI. Recipes describe explicit files rather than dynamic Focus or Review plans; applying a recipe uses current contents and does not restore an old diff.
+- Add CLI `--recipe <file>`, `--save-recipe <file>`, and `--recipe-name <name>`. Saved budget/format provide defaults with explicit overrides; missing paths and over-budget exports fail before writing, while changed files produce a warning.
+- Exclude recipe input/save destinations from CLI repository scanning, validate file destinations before writing, and refuse recipe saves over existing files that are not valid recipes.
+- Clarify local persistence: recipe metadata survives page closure, while repository and imported patch contents remain in memory only.
+
+Content fingerprints are noncryptographic change hints, not revision identifiers or authenticity checks. Recipes must be reapplied to newly imported repository files, and exported context still needs review before sharing.
+
 ## 0.3.0 — 2026-10-14
 
 - Add Review Pack: import a Git unified diff and combine the filtered patch, current changed files, and related JS/TS dependencies, imported-by modules, and tests in one review context bundle.

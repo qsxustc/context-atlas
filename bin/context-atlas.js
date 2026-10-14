@@ -94,7 +94,13 @@ async function scanRepository(directory, output) {
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error('The input must be a directory, not a symlink.');
   const root = await realpath(requestedRoot);
   const ignored = await rootIgnorePatterns(root);
-  const outputPath = output && output !== '-' ? path.resolve(output) : undefined;
+  let outputPath;
+  if (output && output !== '-') {
+    const requestedOutput = path.resolve(output);
+    // Resolve the parent even when the output does not exist yet. The scanner
+    // uses a real root, so lexical aliases (such as macOS /tmp) must match it.
+    outputPath = path.join(await realpath(path.dirname(requestedOutput)), path.basename(requestedOutput));
+  }
   const skipped = { ignored: 0, symlink: 0, binary: 0, large: 0, output: 0 };
   const files = [];
   let totalBytes = 0;
@@ -111,7 +117,7 @@ async function scanRepository(directory, output) {
         skipped.symlink++;
         continue;
       }
-      if (isIgnored(relative, ignored) || (information.isDirectory() && isIgnored(`${relative}/`, ignored))) {
+      if (isIgnored(relative, ignored, { directory: information.isDirectory() })) {
         skipped.ignored++;
         continue;
       }

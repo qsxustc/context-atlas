@@ -88,7 +88,8 @@ function compileIgnorePattern(rawPattern) {
   let pattern = rawPattern.replace(/\\/g, '/');
   const anchored = pattern.startsWith('/');
   if (anchored) pattern = pattern.slice(1);
-  if (pattern.endsWith('/')) pattern = pattern.slice(0, -1);
+  const directoryOnly = pattern.endsWith('/');
+  if (directoryOnly) pattern = pattern.slice(0, -1);
   if (!pattern) return null;
   const tokens = [];
   for (let i = 0; i < pattern.length; i += 1) {
@@ -104,20 +105,20 @@ function compileIgnorePattern(rawPattern) {
     } else if (char === '?') tokens.push(QUESTION);
     else tokens.push(pattern.charCodeAt(i));
   }
-  const compiled = { anchored: anchored || pattern.includes('/'), tokens: Uint32Array.from(tokens) };
+  const compiled = { anchored: anchored || pattern.includes('/'), directoryOnly, tokens: Uint32Array.from(tokens) };
   if (ignorePatterns.size >= MAX_IGNORE_RULES) ignorePatterns.delete(ignorePatterns.keys().next().value);
   ignorePatterns.set(rawPattern, compiled);
   return compiled;
 }
 
-function matchesIgnorePattern(path, rawPattern) {
+function matchesIgnorePattern(path, rawPattern, directory) {
   const compiled = compileIgnorePattern(rawPattern);
   if (!compiled) return false;
   // Suffix dynamic programming: O(pattern length × path length), O(path length) memory.
   // Untrusted .gitignore patterns never execute a backtracking regular expression.
   const length = path.length;
   let next = new Uint8Array(length + 1), current = new Uint8Array(length + 1);
-  next[length] = 1;
+  next[length] = !compiled.directoryOnly || directory ? 1 : 0;
   for (let i = 0; i < length; i += 1) if (path.charCodeAt(i) === 47) next[i] = 1;
   for (let i = compiled.tokens.length - 1; i >= 0; i -= 1) {
     const token = compiled.tokens[i];
@@ -142,19 +143,21 @@ function matchesIgnorePattern(path, rawPattern) {
   return false;
 }
 
-/** Common gitignore globs are supported; custom negations cannot override safe defaults. */
-export function isIgnored(path, customPatterns = []) {
+/** Pass directory:true for directory entries. Custom negations cannot override safe defaults. */
+export function isIgnored(path, customPatterns = [], { directory = false } = {}) {
   let normalized;
   try { normalized = normalizePath(path); } catch { return true; }
   const segments = normalized.split('/');
   const name = segments.at(-1).toLowerCase();
   const extension = name.includes('.') ? name.split('.').at(-1) : '';
   if (segments.some(segment => ignoredDirectories.has(segment.toLowerCase()))) return true;
-  if (credentialFiles.has(name) || credentialExtensions.has(extension)) return true;
-  if (lockFiles.has(name) || name.endsWith('.lock')) return true;
-  if (name === '.env' || (name.startsWith('.env.') && name !== '.env.example')) return true;
-  if (name === '.ds_store' || name === 'thumbs.db' || name === 'desktop.ini' || name.startsWith('._')) return true;
-  if (name.endsWith('~') || /\.(?:swp|swo|tmp)$/.test(name) || binaryExtensions.has(extension)) return true;
+  if (!directory) {
+    if (credentialFiles.has(name) || credentialExtensions.has(extension)) return true;
+    if (lockFiles.has(name) || name.endsWith('.lock')) return true;
+    if (name === '.env' || (name.startsWith('.env.') && name !== '.env.example')) return true;
+    if (name === '.ds_store' || name === 'thumbs.db' || name === 'desktop.ini' || name.startsWith('._')) return true;
+    if (name.endsWith('~') || /\.(?:swp|swo|tmp)$/.test(name) || binaryExtensions.has(extension)) return true;
+  }
   let ignored = false;
   const patterns = typeof customPatterns === 'string' ? customPatterns.split(/\r?\n/) : customPatterns;
   let rules = 0;
@@ -164,7 +167,7 @@ export function isIgnored(path, customPatterns = []) {
     if (!pattern || pattern.startsWith('#')) continue;
     if (rules++ >= MAX_IGNORE_RULES) break;
     const negative = pattern.startsWith('!');
-    if (matchesIgnorePattern(normalized, negative ? pattern.slice(1) : pattern)) ignored = !negative;
+    if (matchesIgnorePattern(normalized, negative ? pattern.slice(1) : pattern, directory)) ignored = !negative;
   }
   return ignored;
 }
@@ -211,8 +214,10 @@ function findSecrets(content) {
       add(bodyStart + first, end, 'private-key', match.index);
     }
   }
-  // The key and quote stay intact: comments, JSON, and assignment syntax remain useful.
-  for (const match of content.matchAll(/\b([A-Za-z_$][A-Za-z0-9_$.-]*)\b["']?\s*[:=]\s*(?:"((?:\\.|[^"\\\r\n])*)"|'((?:\\.|[^'\\\r\n])*)')/g)) {
+  // Only start at the beginning of a key. A word boundary alone also starts after
+  // every dot/hyphen in a long key, repeatedly rescanning the same suffix when an
+  // assignment is absent. The key and quote stay intact in the exported context.
+  for (const match of content.matchAll(/(?<![A-Za-z0-9_$.-])[.-]*([A-Za-z_$][A-Za-z0-9_$.-]*)["']?\s*[:=]\s*(?:"((?:\\.|[^"\\\r\n])*)"|'((?:\\.|[^'\\\r\n])*)')/g)) {
     const key = match[1].replace(/[_$.-]/g, '').toLowerCase();
     if (!/(?:apikey|accesstoken|authtoken|token|password|passwd|secret|secretkey|privatekey)$/.test(key)) continue;
     const value = match[2] ?? match[3];

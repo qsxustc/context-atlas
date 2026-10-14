@@ -51,6 +51,10 @@ function isWithin(root, candidate) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function isPublicPath(root, candidate) {
+  return isWithin(root, candidate) && !path.relative(root, candidate).split(path.sep).some(part => part.startsWith('.'));
+}
+
 function respond(response, code, message) {
   response.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8' });
   response.end(`${message}\n`);
@@ -93,14 +97,16 @@ async function start() {
         // Match the build's public/ -> site-root asset mapping during development.
         file = await realpath(path.resolve(root, 'public', `.${pathname}`));
       }
-      if (!isWithin(root, file)) {
+      // A visible symlink must not turn a hidden file or directory into a
+      // public URL. Check the resolved path as well as the original request.
+      if (!isPublicPath(root, file)) {
         respond(response, 403, 'Forbidden path');
         return;
       }
       let metadata = await stat(file);
       if (metadata.isDirectory()) {
         file = await realpath(path.join(file, 'index.html'));
-        if (!isWithin(root, file)) {
+        if (!isPublicPath(root, file)) {
           respond(response, 403, 'Forbidden path');
           return;
         }

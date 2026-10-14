@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   normalizePath, isIgnored, estimateTokens, analyzeFile, redactSecrets,
   suggestSelection, calculateSelection, buildContext,
@@ -38,6 +39,22 @@ test('custom patterns handle directory, glob, root, double-star and ordered nega
   assert.equal(isIgnored('private/a.ts', ['/private/']), true);
   assert.equal(isIgnored('src/a.test.ts', '# ignored comment\n**/*.test.?s'), true);
   assert.equal(isIgnored('README.md', ['[abc].md']), false, 'regex characters remain literal');
+});
+
+test('directory checks distinguish file extensions and directory-only ignore rules', () => {
+  assert.equal(isIgnored('assets.png'), true, 'a PNG file is excluded by default');
+  assert.equal(isIgnored('assets.png', [], { directory: true }), false, 'a directory can have a binary-looking extension');
+  assert.equal(isIgnored('assets.png/readme.md'), false);
+  assert.equal(isIgnored('node_modules', [], { directory: true }), true);
+  assert.equal(isIgnored('assets.png', ['*.png'], { directory: true }), true, 'custom patterns still apply to directories');
+  assert.equal(isIgnored('scratch', ['scratch/']), false, 'a directory-only rule does not match a file of the same name');
+  assert.equal(isIgnored('scratch', ['scratch/'], { directory: true }), true);
+  assert.equal(isIgnored('scratch/note.md', ['scratch/']), true, 'directory rules still exclude descendants');
+  assert.equal(isIgnored('src/scratch', ['scratch/']), false);
+  assert.equal(isIgnored('src/scratch', ['scratch/'], { directory: true }), true);
+  assert.equal(isIgnored('src/scratch', ['/scratch/'], { directory: true }), false);
+  assert.equal(isIgnored('src/generated', ['/src/generated/'], { directory: true }), true);
+  assert.equal(isIgnored('src/generated/main.ts', ['/src/generated/']), true);
 });
 
 test('common credential stores and private key files are excluded before content scanning', () => {
@@ -89,6 +106,8 @@ test('secret redaction retains assignment syntax, comments, bearer prefix and ac
     'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789',
     'const password = "hunter2";',
     'const clientSecret = "a-real-secret-value";',
+    'config',
+    '  .password = "another-real-password";',
   ].join('\n');
   const output = redactSecrets(input);
   assert.ok(output.includes('// Keep this useful comment'));
@@ -99,7 +118,8 @@ test('secret redaction retains assignment syntax, comments, bearer prefix and ac
   assert.ok(!output.includes(githubToken));
   assert.ok(!output.includes(awsKey));
   const file = makeFile('config.ts', input);
-  assert.deepEqual(file.risks.map(risk => risk.line), [2, 3, 4, 5, 6]);
+  assert.deepEqual(file.risks.map(risk => risk.line), [2, 3, 4, 5, 6, 8]);
+  assert.ok(output.includes('  .password = "[REDACTED]";'));
   assert.equal(file.risks[0].kind, 'github-token');
   assert.equal(file.risks[1].kind, 'aws-access-key');
   assert.ok(file.risks.every(risk => risk.match === '[REDACTED]'));
@@ -127,6 +147,19 @@ test('large or malformed private-key bodies do not repeatedly scan overlapping c
   const nested = `${header}\n`.repeat(10_000) + 'MIIEvQIBADAnestedvalue';
   assert.equal(redactSecrets(nested), `${header}\n[REDACTED]`);
   assert.equal(makeFile('malformed-key.txt', nested).risks.length, 1);
+});
+
+test('long punctuation-separated identifiers do not repeatedly rescan credential candidates', () => {
+  // Run adversarial synchronous work in a child so a regression cannot block
+  // the test runner's event loop and prevent its own timeout from firing.
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { analyzeFile, redactSecrets } from ${JSON.stringify(new URL('../src/core.js', import.meta.url).href)};
+    const prefix = 'identifier-'.repeat(90_000);
+    const input = prefix + '\\nconst $token = "a-real-value";\\nconfig.client.secret = "another-real-value";';
+    assert.equal(redactSecrets(input), prefix + '\\nconst $token = "[REDACTED]";\\nconfig.client.secret = "[REDACTED]";');
+    assert.deepEqual(analyzeFile({ path: 'large-config.ts', content: input }).risks.map(risk => risk.line), [2, 3]);
+  `], { timeout: 5000, stdio: 'pipe' });
 });
 
 test('example placeholders and normal strings are not flagged as credentials', () => {

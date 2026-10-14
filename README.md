@@ -66,7 +66,9 @@ The source uses browser ES modules, so serve it over HTTP using the included dev
 
 A folder picker is the easiest way to load a repository in a current desktop browser. Folder drag-and-drop support depends on your browser; use the picker if dragging does not work.
 
-Browser imports are limited to **5,000 files**, **1 MiB per file**, and **50 MiB of eligible text**. Common dependencies, generated output, binary files, and credential files are excluded. Root and nested `.gitignore` rules are supported on a best-effort basis: common globs work, built-in exclusions remain in force, and rule length/count are bounded. See the [architecture notes](docs/architecture.md) for details.
+Browser imports are limited to **5,000 readable text files**, **1 MiB per file**, and **50 MiB of eligible text**. Default exclusions, custom ignore rules, and file validation run before a file counts toward the 5,000-file limit, so ignored, binary, oversized, or invalid UTF-8 files do not crowd out usable source files. Common dependencies, generated output, and credential files are excluded.
+
+Root and nested `.gitignore` rules are supported on a best-effort basis. A directory-only rule such as `cache/` leaves a regular file named `cache` alone. Built-in exclusions remain in force, and rule length/count are bounded. Drag-and-drop enumerates at most **100,000 entries**, and browser imports accept at most **1 MiB of `.gitignore` text in total**. If a limit or read failure leaves a directory's ignore rules unknown, that directory is skipped. The app reports limited imports. See the [architecture notes](docs/architecture.md) for details.
 
 ### Use the CLI
 
@@ -80,7 +82,7 @@ For XML output, add `--format xml`. Omit `--output` to write the bundle to stand
 
 Without `--budget`, the CLI exports all eligible files. With a budget, it applies the same selection heuristic as the browser app.
 
-The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. Diagnostics go to standard error so exported standard output can be piped into another command.
+The CLI skips symlinks, ignored paths, binary or non-UTF-8 files, and files over 1 MiB. It reads `.gitignore` from the input root and limits eligible text to 50 MiB per run; use a narrower directory if your repository exceeds that limit. The browser's 5,000-file cap does not apply to the CLI. An existing `--output` file is excluded from its own export, including when its parent path uses a symlink alias. Diagnostics go to standard error so exported standard output can be piped into another command.
 
 The CLI is useful when you want a context file directly from a terminal. The browser app is useful when you want to inspect and adjust the selection visually.
 
@@ -90,7 +92,7 @@ Token counts are **estimates**, not the output of a model-specific tokenizer. Th
 
 Automatic fitting uses a file-path heuristic that prioritizes README files, configuration, entry points, and source files. It does not analyze your task or build a dependency graph. Review the selected files against the actual task: a small but unrelated file is still unrelated, and an omitted dependency may matter.
 
-Local redaction recognizes common credential patterns. It cannot guarantee detection of every secret or sensitive detail. Review the exported text before sharing it with another service.
+Local redaction recognizes common credential patterns. It cannot guarantee detection of every secret or sensitive detail. Redaction is enabled again when you load another project or restore the demo. Review the exported text before sharing it with another service.
 
 ### Build and verify
 
@@ -104,7 +106,7 @@ Tests run with Node's built-in test runner. The build writes a static site to `d
 
 For the included GitHub Pages workflow, set **Repository Settings → Pages → Source → GitHub Actions**, then push to `main` or run the deployment workflow manually.
 
-See [docs/architecture.md](docs/architecture.md) for the modules, data flow, and input limits.
+See [docs/architecture.md](docs/architecture.md) for the modules, data flow, and input limits, and [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 ### Where it fits
 

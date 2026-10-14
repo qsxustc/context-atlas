@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
 import os from 'node:os';
@@ -104,6 +104,36 @@ test('CLI refuses output symlinks and leaves their destination unchanged', async
   assert.equal(await readFile(original, 'utf8'), 'PRESERVE_ME');
 });
 
+test('CLI excludes its previous output through a symlinked parent directory', async t => {
+  const { temporary, directory } = await fixture(t);
+  const alias = path.join(temporary, 'parent-alias');
+  await symlink(directory, alias, 'dir');
+  const output = path.join(alias, 'context.md');
+  await writeFile(output, 'PREVIOUS_EXPORT_SENTINEL');
+  const result = run([directory, '--output', output]);
+  assert.equal(result.status, 0, result.stderr);
+  const contents = await readFile(output, 'utf8');
+  assert.ok(!contents.includes('PREVIOUS_EXPORT_SENTINEL'), 'previous exports must not be imported through an alias');
+  assert.doesNotMatch(contents, /`context\.md`/, 'the old export must also be absent from the file map');
+});
+
+test('CLI distinguishes directory-only ignore rules and binary-looking directory names', async t => {
+  const { directory } = await fixture(t);
+  await writeFile(path.join(directory, '.gitignore'), 'private-notes/\ncache/\n');
+  await writeFile(path.join(directory, 'cache'), 'REGULAR_CACHE_FILE_SENTINEL');
+  await mkdir(path.join(directory, 'src', 'cache'));
+  await writeFile(path.join(directory, 'src', 'cache', 'generated.js'), 'IGNORED_CACHE_DIRECTORY_SENTINEL');
+  await mkdir(path.join(directory, 'icons.png'));
+  await writeFile(path.join(directory, 'icons.png', 'index.js'), 'SOURCE_IN_PNG_DIRECTORY_SENTINEL');
+  await writeFile(path.join(directory, 'image.png'), 'IGNORED_IMAGE_FILE_SENTINEL');
+  const result = run([directory]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes('REGULAR_CACHE_FILE_SENTINEL'), 'a directory-only rule must retain a same-named file');
+  assert.ok(result.stdout.includes('SOURCE_IN_PNG_DIRECTORY_SENTINEL'), 'a binary-looking directory can contain source files');
+  assert.ok(!result.stdout.includes('IGNORED_CACHE_DIRECTORY_SENTINEL'), 'the directory-only rule must still exclude directories');
+  assert.ok(!result.stdout.includes('IGNORED_IMAGE_FILE_SENTINEL'), 'binary file extensions must still be excluded');
+});
+
 test('CLI help and argument failures have clean output', () => {
   const help = run(['--help']);
   assert.equal(help.status, 0);
@@ -139,9 +169,9 @@ async function get(port, pathname, method = 'GET') {
   });
 }
 
-test('static server rejects traversal and malformed URLs and serves safe headers', async t => {
+async function startServer(t, script = path.join(projectRoot, 'scripts/serve.mjs')) {
   const port = await freePort();
-  const child = spawn(process.execPath, [path.join(projectRoot, 'scripts/serve.mjs'), '--port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [script, '--port', String(port)], { stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { child.kill('SIGTERM'); });
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Static server did not become ready')), 5000);
@@ -149,6 +179,11 @@ test('static server rejects traversal and malformed URLs and serves safe headers
     child.once('error', error => { clearTimeout(timeout); reject(error); });
     child.once('exit', code => { clearTimeout(timeout); reject(new Error(`Static server exited with ${code}`)); });
   });
+  return port;
+}
+
+test('static server rejects traversal and malformed URLs and serves safe headers', async t => {
+  const port = await startServer(t);
   const source = await get(port, '/src/core.js');
   assert.equal(source.status, 200);
   assert.match(source.headers['content-type'], /javascript/);
@@ -165,4 +200,25 @@ test('static server rejects traversal and malformed URLs and serves safe headers
   }
   assert.equal((await get(port, '/%ZZ')).status, 400);
   assert.equal((await get(port, '/', 'POST')).status, 405);
+});
+
+test('static server cannot expose hidden files through visible symlink aliases', async t => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'context-atlas-server-'));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  await mkdir(path.join(temporary, 'scripts'));
+  await mkdir(path.join(temporary, '.private'));
+  await copyFile(path.join(projectRoot, 'scripts/serve.mjs'), path.join(temporary, 'scripts/serve.mjs'));
+  await writeFile(path.join(temporary, '.env'), 'HIDDEN_ENV_SENTINEL');
+  await writeFile(path.join(temporary, '.private', 'index.html'), 'HIDDEN_DIRECTORY_SENTINEL');
+  await writeFile(path.join(temporary, 'safe.txt'), 'safe public content');
+  await symlink(path.join(temporary, '.env'), path.join(temporary, 'visible.txt'));
+  await symlink(path.join(temporary, '.private'), path.join(temporary, 'visible-directory'), 'dir');
+  await symlink(path.join(temporary, 'safe.txt'), path.join(temporary, 'safe-alias.txt'));
+  const port = await startServer(t, path.join(temporary, 'scripts/serve.mjs'));
+  for (const pathname of ['/visible.txt', '/visible-directory/', '/visible-directory/index.html']) {
+    const response = await get(port, pathname);
+    assert.equal(response.status, 403, pathname);
+    assert.doesNotMatch(response.body, /HIDDEN_/);
+  }
+  assert.equal((await get(port, '/safe-alias.txt')).body, 'safe public content');
 });
